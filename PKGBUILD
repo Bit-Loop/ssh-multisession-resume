@@ -11,6 +11,7 @@ url="https://github.com/Bit-Loop/${_pkgname}"
 license=('MIT')
 depends=('bash' 'openssh')
 makedepends=('git')
+checkdepends=('tmux' 'screen')
 optdepends=(
   'tmux: preferred persistent terminal backend'
   'screen: fallback terminal backend'
@@ -32,6 +33,12 @@ pkgver() {
   fi
 }
 
+check() {
+  cd "${_srcname}" || return
+
+  env -u TMUX -u STY ./tests/smoke.sh
+}
+
 package() {
   cd "${_srcname}" || return
 
@@ -47,6 +54,8 @@ package() {
   install -Dm755 tests/smoke.sh "${pkgdir}/usr/share/${_pkgname}/tests/smoke.sh"
 
   install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 CHANGELOG.md "${pkgdir}/usr/share/doc/${pkgname}/CHANGELOG.md"
+  install -Dm644 SECURITY.md "${pkgdir}/usr/share/doc/${pkgname}/SECURITY.md"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 
   install -dm755 "${pkgdir}/usr/bin"

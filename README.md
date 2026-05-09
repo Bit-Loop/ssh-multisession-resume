@@ -242,8 +242,11 @@ It does not kill unrelated user sessions.
 From a source checkout, run smoke checks with:
 
 ```bash
-./tests/smoke.sh
+env -u TMUX -u STY ./tests/smoke.sh
 ```
+
+The AUR package also runs this smoke suite from `check()` when makepkg checks
+are enabled.
 
 ## Files
 
