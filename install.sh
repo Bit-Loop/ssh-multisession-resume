@@ -1,0 +1,563 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SERVER_INSTALL="${SCRIPT_DIR}/server/install.sh"
+CLIENT_INSTALL="${SCRIPT_DIR}/client/install.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./install.sh
+  ./install.sh apply
+  ./install.sh doctor
+  ./install.sh status
+  ./install.sh sessions
+  ./install.sh monitor [--interval SECS]
+  ./install.sh deps
+  ./install.sh service-install
+  ./install.sh service-status
+  ./install.sh service-rollback
+  ./install.sh rollback
+  ./install.sh detect-current
+
+Default behavior:
+  Detect the current SSH client IP, ask whether to add it, update SSHD through
+  sudo when needed, and install the current user's shell hook.
+
+Run this from the repo root without sudo. The script asks for sudo only for the
+system SSHD change.
+USAGE
+}
+
+die() {
+  echo "$*" >&2
+  exit 1
+}
+
+require_file() {
+  local file="$1"
+
+  [[ -r "$file" ]] || die "Missing required file: ${file}"
+}
+
+sshd_config_path() {
+  printf '%s\n' "${SSHD_CONFIG_FILE:-/etc/ssh/sshd_config}"
+}
+
+server_needs_sudo() {
+  local config
+
+  config="$(sshd_config_path)"
+  [[ "$config" == /etc/* && $EUID -ne 0 ]]
+}
+
+run_server() {
+  if server_needs_sudo; then
+    sudo "$SERVER_INSTALL" "$@"
+  else
+    "$SERVER_INSTALL" "$@"
+  fi
+}
+
+run_server_no_sudo() {
+  "$SERVER_INSTALL" "$@"
+}
+
+target_client_user() {
+  if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    printf '%s\n' "$SUDO_USER"
+  else
+    id -un
+  fi
+}
+
+target_client_home() {
+  local user="$1"
+  local home=""
+
+  if [[ "$user" == "$(id -un)" ]]; then
+    printf '%s\n' "$HOME"
+    return 0
+  fi
+
+  if command -v getent >/dev/null 2>&1; then
+    home="$(getent passwd "$user" | cut -d: -f6 || true)"
+  fi
+
+  [[ -n "$home" ]] || die "Could not determine home directory for ${user}."
+  printf '%s\n' "$home"
+}
+
+run_client() {
+  local user home
+
+  user="$(target_client_user)"
+  home="$(target_client_home "$user")"
+
+  if [[ "$user" != "$(id -un)" ]]; then
+    sudo -u "$user" env HOME="$home" "$CLIENT_INSTALL" "$@"
+  else
+    HOME="$home" "$CLIENT_INSTALL" "$@"
+  fi
+}
+
+prompt_yes_no() {
+  local prompt="$1"
+  local answer=""
+  local key=""
+  local rest=""
+  local selected=0
+  local yellow=$'\033[1;33m'
+  local white=$'\033[0;37m'
+  local reset=$'\033[0m'
+
+  if [[ -t 0 && -t 1 ]]; then
+    while true; do
+      if (( selected == 0 )); then
+        printf '\r%s %s[ YES ]%s %s[ NO ]%s\033[K' "$prompt" "$yellow" "$reset" "$white" "$reset"
+      else
+        printf '\r%s %s[ YES ]%s %s[ NO ]%s\033[K' "$prompt" "$white" "$reset" "$yellow" "$reset"
+      fi
+
+      IFS= read -r -s -n 1 key || {
+        printf '\n'
+        return 1
+      }
+
+      case "$key" in
+        ''|$'\n'|$'\r')
+          printf '\n'
+          (( selected == 0 ))
+          return $?
+          ;;
+        $'\e')
+          rest=""
+          IFS= read -r -s -n 2 -t 0.1 rest || true
+          case "$rest" in
+            '[C'|'[B')
+              selected=1
+              ;;
+            '[D'|'[A')
+              selected=0
+              ;;
+          esac
+          ;;
+        ' '|$'\t')
+          if (( selected == 0 )); then
+            selected=1
+          else
+            selected=0
+          fi
+          ;;
+        y|Y)
+          printf '\n'
+          return 0
+          ;;
+        n|N)
+          printf '\n'
+          return 1
+          ;;
+      esac
+    done
+  fi
+
+  while true; do
+    printf '%s %s[ YES ]%s %s[ NO ]%s: ' "$prompt" "$yellow" "$reset" "$white" "$reset"
+    if ! IFS= read -r answer; then
+      echo
+      return 1
+    fi
+
+    case "${answer,,}" in
+      ""|y|yes)
+        return 0
+        ;;
+      n|no)
+        return 1
+        ;;
+      *)
+        echo "Please answer YES or NO."
+        ;;
+    esac
+  done
+}
+
+prompt_self_add() {
+  local ip="$1"
+
+  prompt_yes_no "Self add current SSH client IP (${ip})?"
+}
+
+detect_current_ip() {
+  "$SERVER_INSTALL" detect-current
+}
+
+package_manager() {
+  if command -v pacman >/dev/null 2>&1; then
+    printf '%s\n' pacman
+  elif command -v apt-get >/dev/null 2>&1; then
+    printf '%s\n' apt-get
+  elif command -v dnf >/dev/null 2>&1; then
+    printf '%s\n' dnf
+  elif command -v yum >/dev/null 2>&1; then
+    printf '%s\n' yum
+  elif command -v zypper >/dev/null 2>&1; then
+    printf '%s\n' zypper
+  elif command -v apk >/dev/null 2>&1; then
+    printf '%s\n' apk
+  else
+    return 1
+  fi
+}
+
+run_as_root() {
+  if [[ $EUID -eq 0 ]]; then
+    "$@"
+  else
+    command -v sudo >/dev/null 2>&1 || die "sudo is required to install dependencies."
+    sudo "$@"
+  fi
+}
+
+missing_dependency_packages() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    printf '%s\n' tmux
+  fi
+
+  if ! command -v tmux >/dev/null 2>&1 && ! command -v screen >/dev/null 2>&1; then
+    printf '%s\n' screen
+  fi
+}
+
+install_packages() {
+  local manager="$1"
+  shift
+
+  [[ $# -gt 0 ]] || return 0
+
+  case "$manager" in
+    pacman)
+      run_as_root pacman -S --needed "$@"
+      ;;
+    apt-get)
+      run_as_root apt-get update
+      run_as_root apt-get install -y "$@"
+      ;;
+    dnf)
+      run_as_root dnf install -y "$@"
+      ;;
+    yum)
+      run_as_root yum install -y "$@"
+      ;;
+    zypper)
+      run_as_root zypper install -y "$@"
+      ;;
+    apk)
+      run_as_root apk add "$@"
+      ;;
+    *)
+      die "Unsupported package manager: ${manager}"
+      ;;
+  esac
+}
+
+cmd_deps() {
+  local manager=""
+  local -a packages=()
+
+  while IFS= read -r package; do
+    [[ -n "$package" ]] && packages+=("$package")
+  done < <(missing_dependency_packages)
+
+  if command -v tmux >/dev/null 2>&1; then
+    echo "tmux: present"
+  else
+    echo "tmux: missing"
+  fi
+
+  if command -v screen >/dev/null 2>&1; then
+    echo "screen fallback: present"
+  else
+    echo "screen fallback: missing"
+  fi
+
+  if [[ ${#packages[@]} -eq 0 ]]; then
+    echo "dependencies: ok"
+    return 0
+  fi
+
+  if ! manager="$(package_manager)"; then
+    die "Could not find a supported package manager. Install: ${packages[*]}"
+  fi
+
+  echo "package manager: ${manager}"
+  echo "missing packages: ${packages[*]}"
+  if prompt_yes_no "Install missing packages (${packages[*]})?"; then
+    install_packages "$manager" "${packages[@]}"
+    echo "Dependency install complete."
+  else
+    die "Missing dependency install declined."
+  fi
+}
+
+ensure_mux_available() {
+  if command -v tmux >/dev/null 2>&1 || command -v screen >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "tmux or screen is required for managed SSH sessions."
+  cmd_deps
+}
+
+maybe_offer_service_install() {
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    return 0
+  fi
+
+  command -v tmux >/dev/null 2>&1 || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+
+  if prompt_yes_no "Install user service for cross-boot tmux readiness?"; then
+    run_client service-install
+  else
+    echo "Skipped user service install."
+  fi
+}
+
+cmd_apply() {
+  local current_ip=""
+
+  require_file "$SERVER_INSTALL"
+  require_file "$CLIENT_INSTALL"
+
+  ensure_mux_available
+
+  if ! current_ip="$(detect_current_ip)"; then
+    die "Could not detect the current SSH client IP. Run this from the SSH session you want to manage."
+  fi
+
+  if ! prompt_self_add "$current_ip"; then
+    echo "No changes made."
+    return 0
+  fi
+
+  run_server add-current --ip "$current_ip"
+  run_client apply
+  maybe_offer_service_install
+
+  echo
+  echo "Install complete. Log out and reconnect from this SSH client."
+  echo "After reconnecting, run ./install.sh doctor to verify the active session."
+}
+
+cmd_status() {
+  require_file "$SERVER_INSTALL"
+  require_file "$CLIENT_INSTALL"
+
+  echo "Server:"
+  run_server_no_sudo status
+  echo
+  echo "Client:"
+  run_client status
+}
+
+cmd_sessions() {
+  require_file "$CLIENT_INSTALL"
+
+  run_client sessions
+}
+
+cmd_monitor() {
+  local interval=2
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --interval)
+        [[ $# -ge 2 && "${2:-}" != --* ]] || die "Missing value for --interval"
+        interval="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *)
+        die "Unknown monitor arg: $1"
+        ;;
+    esac
+  done
+
+  [[ "$interval" =~ ^[0-9]+$ && "$interval" -gt 0 ]] || die "Invalid monitor interval: ${interval}"
+
+  while true; do
+    printf '\033[H\033[2J'
+    date
+    echo
+    cmd_sessions
+    sleep "$interval"
+  done
+}
+
+cmd_service_install() {
+  require_file "$CLIENT_INSTALL"
+
+  run_client service-install
+}
+
+cmd_service_status() {
+  require_file "$CLIENT_INSTALL"
+
+  run_client service-status
+}
+
+cmd_service_rollback() {
+  require_file "$CLIENT_INSTALL"
+
+  run_client service-rollback
+}
+
+cmd_doctor() {
+  local current_ip=""
+  local session_name=""
+  local ok=1
+  local in_managed_mux=0
+
+  require_file "$SERVER_INSTALL"
+  require_file "$CLIENT_INSTALL"
+
+  echo "Session:"
+  if [[ -n "${SSH_CONNECTION:-}${SSH_CLIENT:-}${SSH_TTY:-}" ]]; then
+    echo "  ssh: yes"
+  else
+    echo "  ssh: no"
+    ok=0
+  fi
+
+  if current_ip="$(detect_current_ip 2>/dev/null)"; then
+    echo "  current client ip: ${current_ip}"
+  else
+    echo "  current client ip: not detected"
+    ok=0
+  fi
+
+  if [[ "${SSH_AUTO_RESUME:-}" == "1" || "${SCREEN_KILL_ON_HANGUP:-}" == "1" ]]; then
+    echo "  sshd match env: yes"
+  else
+    echo "  sshd match env: no"
+    ok=0
+  fi
+
+  if [[ -n "${TMUX:-}" ]]; then
+    session_name="$(tmux display-message -p '#S' 2>/dev/null || true)"
+    [[ -n "$session_name" ]] || session_name="${TMUX}"
+    echo "  inside tmux: yes (${session_name})"
+    case "$TMUX" in
+      */ssh-resume-*)
+        echo "  managed tmux: yes"
+        in_managed_mux=1
+        ;;
+      *)
+        echo "  managed tmux: unknown"
+        ;;
+    esac
+  else
+    echo "  inside tmux: no"
+  fi
+
+  if [[ -n "${STY:-}" ]]; then
+    echo "  inside screen: yes (${STY})"
+    case "$STY" in
+      *.ssh-resume-*|ssh-resume-*|*.ssh-kill-*|ssh-kill-*|*.ip-*|ip-*)
+        echo "  managed screen: yes"
+        in_managed_mux=1
+        ;;
+      *)
+        echo "  managed screen: unknown"
+        ;;
+    esac
+  else
+    echo "  inside screen: no"
+  fi
+
+  if (( in_managed_mux == 0 )); then
+    ok=0
+  fi
+
+  echo
+  echo "Client hook:"
+  run_client status
+
+  echo
+  echo "Multiplexer sessions:"
+  run_client sessions
+
+  echo
+  if (( ok == 1 )); then
+    [[ -n "$session_name" ]] || session_name="${STY:-managed session}"
+    echo "doctor: ok (${session_name})"
+    echo "Disconnecting this SSH client should leave programs running for the next reconnect."
+  else
+    echo "doctor: not active for this login"
+    echo "If you just installed it, log out completely and reconnect from the matched SSH client."
+    return 1
+  fi
+}
+
+cmd_rollback() {
+  require_file "$SERVER_INSTALL"
+  require_file "$CLIENT_INSTALL"
+
+  run_server rollback
+  run_client service-rollback
+  run_client rollback
+}
+
+ACTION="${1:-apply}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+case "$ACTION" in
+  apply)
+    cmd_apply "$@"
+    ;;
+  doctor)
+    cmd_doctor "$@"
+    ;;
+  status)
+    cmd_status "$@"
+    ;;
+  sessions)
+    cmd_sessions "$@"
+    ;;
+  monitor)
+    cmd_monitor "$@"
+    ;;
+  deps)
+    cmd_deps "$@"
+    ;;
+  service-install)
+    cmd_service_install "$@"
+    ;;
+  service-status)
+    cmd_service_status "$@"
+    ;;
+  service-rollback)
+    cmd_service_rollback "$@"
+    ;;
+  rollback)
+    cmd_rollback "$@"
+    ;;
+  detect-current)
+    detect_current_ip "$@"
+    ;;
+  -h|--help)
+    usage
+    ;;
+  *)
+    echo "Unknown action: ${ACTION}" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,4 @@
+# Legacy file retained for older installed profile blocks.
+# New installs use screen-auto-resume.screenrc.
+startup_message off
+defscrollback 200000

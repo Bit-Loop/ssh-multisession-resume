@@ -1,0 +1,48 @@
+# Local Codex/agent workspace state
+.agents/
+.codex/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Logs, runtime state, and temporary files
+*.log
+*.pid
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.out
+tmp/
+temp/
+.cache/
+
+# Shell test and coverage artifacts
+coverage/
+.coverage
+
+# Python helper/test cache if local tooling is added
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Packaged release artifacts
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.deb
+*.rpm

@@ -1,0 +1,3 @@
+# Used only when tmux is unavailable for SSH_AUTO_RESUME sessions.
+startup_message off
+defscrollback 200000
