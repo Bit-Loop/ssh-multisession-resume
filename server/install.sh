@@ -61,6 +61,39 @@ usage_error() {
   exit 2
 }
 
+trim_space() {
+  local value="$1"
+
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s\n' "$value"
+}
+
+validate_uint_range() {
+  local key="$1"
+  local value="$2"
+  local min="$3"
+  local max="$4"
+  local normalized
+
+  if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+    usage_error "Invalid ${key}: ${value} (must be an integer)"
+  fi
+
+  normalized="$value"
+  while [[ "${#normalized}" -gt 1 && "$normalized" == 0* ]]; do
+    normalized="${normalized#0}"
+  done
+
+  if (( ${#normalized} > ${#max} )) || { (( ${#normalized} == ${#max} )) && [[ "$normalized" > "$max" ]]; }; then
+    usage_error "${key} out of range: ${value} (must be ${min}-${max})"
+  fi
+
+  if (( 10#$normalized < min )); then
+    usage_error "${key} out of range: ${value} (must be ${min}-${max})"
+  fi
+}
+
 need_root() {
   if [[ "$SSHD_CONFIG" == /etc/* && $EUID -ne 0 ]]; then
     die "Run with sudo/root for server changes."
@@ -78,9 +111,7 @@ validate_positive_uint() {
   local key="$1"
   local value="$2"
 
-  if ! [[ "$value" =~ ^[0-9]+$ ]] || (( value < 1 )); then
-    usage_error "Invalid ${key}: ${value} (must be a positive integer)"
-  fi
+  validate_uint_range "$key" "$value" 1 2147483647
 }
 
 validate_ipv4_value() {
@@ -97,9 +128,7 @@ validate_ipv4_value() {
 
   IFS=. read -r a b c d <<< "$ip"
   for octet in "$a" "$b" "$c" "$d"; do
-    if (( 10#$octet > 255 )); then
-      usage_error "IP octet out of range in ${ip}: ${octet}"
-    fi
+    validate_uint_range "IP octet in ${ip}" "$octet" 0 255
   done
 }
 
@@ -111,9 +140,7 @@ validate_address() {
   if [[ "$value" == */* ]]; then
     ip="${value%/*}"
     prefix="${value#*/}"
-    if ! [[ "$prefix" =~ ^[0-9]+$ ]] || (( 10#$prefix > 32 )); then
-      usage_error "CIDR prefix out of range in ${value}"
-    fi
+    validate_uint_range "CIDR prefix in ${value}" "$prefix" 0 32
   fi
 
   validate_ipv4_value "$ip"
@@ -126,7 +153,7 @@ add_address_list() {
 
   IFS=',' read -r -a parts <<< "$raw_list"
   for raw in "${parts[@]}"; do
-    address="${raw//[[:space:]]/}"
+    address="$(trim_space "$raw")"
     if [[ -z "$address" ]]; then
       usage_error "Empty address entry in ${raw_list}"
     fi

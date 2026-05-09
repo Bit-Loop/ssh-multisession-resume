@@ -39,6 +39,36 @@ if command -v zsh >/dev/null 2>&1; then
   zsh -n "$LEGACY_AUTO_SCREEN"
 fi
 
+expect_success() {
+  local label="$1"
+  local out
+  shift
+
+  out="$(mktemp)"
+  if ! "$@" > "$out" 2>&1; then
+    echo "expected success: ${label}" >&2
+    cat "$out" >&2
+    rm -f "$out"
+    exit 1
+  fi
+  rm -f "$out"
+}
+
+expect_failure() {
+  local label="$1"
+  local out
+  shift
+
+  out="$(mktemp)"
+  if "$@" > "$out" 2>&1; then
+    echo "expected failure: ${label}" >&2
+    cat "$out" >&2
+    rm -f "$out"
+    exit 1
+  fi
+  rm -f "$out"
+}
+
 tmp_usage="$(mktemp)"
 "$ROOT_INSTALL" --help > "$tmp_usage"
 grep -q '^  ./ssh-multisession-resume doctor$' "$tmp_usage"
@@ -51,6 +81,19 @@ bash -c "SCREEN_KILL_ON_HANGUP=1 SCREEN_KILL_SCREENRC='${ROOT_DIR}/client/screen
 if command -v zsh >/dev/null 2>&1; then
   zsh -c "SSH_AUTO_RESUME=1 SSH_AUTO_RESUME_TMUX_CONF='${TMUX_CONF}' SSH_AUTO_RESUME_SCREENRC='${SCREENRC}' SSH_CONNECTION=x . '${AUTO_RESUME}'; printf '%s\n' zsh-auto-resume-guard-ok"
 fi
+
+AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+  . "$AUTO_RESUME"
+  [[ "$(_ssh_auto_resume_sanitize "100.101.137.20")" == "100_101_137_20" ]]
+  [[ "$(_ssh_auto_resume_sanitize "../../bad source!")" == "______bad_source_" ]]
+  SSH_CONNECTION="198.51.100.8 55555 10.0.0.1 22"
+  [[ "$(_ssh_auto_resume_source)" == "198.51.100.8" ]]
+  unset SSH_CONNECTION
+  SSH_CLIENT="203.0.113.9 55555 22"
+  [[ "$(_ssh_auto_resume_source)" == "203.0.113.9" ]]
+  unset SSH_CLIENT
+  [[ "$(_ssh_auto_resume_source)" == "unknown" ]]
+'
 
 tmp_fake_bin="$(mktemp -d)"
 tmp_fake_state="$(mktemp)"
@@ -131,6 +174,16 @@ PATH="${tmp_fake_bin}:$PATH" FAKE_TMUX_STATE="$tmp_fake_state" AUTO_RESUME="$AUT
   _ssh_auto_resume_select_tmux
   [[ "$_ssh_auto_resume_selected" == "ip-100_101_137_20-2" ]]
   [[ "$_ssh_auto_resume_selected_slot" == "2" ]]
+'
+
+printf '%s\n' 'ip-100_101_137_20-0|1' 'ip-100_101_137_20-1|1' > "$tmp_fake_state"
+PATH="${tmp_fake_bin}:$PATH" FAKE_TMUX_STATE="$tmp_fake_state" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+  . "$AUTO_RESUME"
+  _ssh_auto_resume_socket_name=ssh-resume-test
+  _ssh_auto_resume_session_base=ip-100_101_137_20
+  _ssh_auto_resume_reservation_dir="$(mktemp -d)"
+  SSH_AUTO_RESUME_MAX_SLOTS=2
+  ! _ssh_auto_resume_select_tmux >/dev/null 2>&1
 '
 
 AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
@@ -216,6 +269,72 @@ grep -q '^export EXISTING_PROFILE_VALUE=1$' "$tmp_home_existing/.profile"
 tmp_conf_dir="$(mktemp -d)"
 tmp_conf="${tmp_conf_dir}/sshd_config"
 printf 'Port 22\nPasswordAuthentication no\n' > "$tmp_conf"
+
+valid_addresses=(
+  "0.0.0.0"
+  "255.255.255.255"
+  "192.168.001.010"
+  "203.0.113.7/0"
+  "203.0.113.7/32"
+)
+for address in "${valid_addresses[@]}"; do
+  expect_success "valid address ${address}" \
+    env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$SERVER_INSTALL" apply --ip "$address"
+done
+
+expect_success "trimmed comma address list" \
+  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+  "$SERVER_INSTALL" apply --ips ' 10.0.0.1 , 172.16.0.0/12 '
+grep -q '^Match Address 10.0.0.1,172.16.0.0/12$' "$tmp_conf"
+
+invalid_addresses=(
+  ""
+  "1.2.3"
+  "1.2.3.4.5"
+  "1.2.3.a"
+  "256.0.0.1"
+  "999999999999999999999.1.1.1"
+  "1.2.3.4/33"
+  "1.2.3.4/-1"
+  "1.2.3.4/999999999999999999999"
+  "1.2.3 .4"
+  $'1.2.3.\t4'
+)
+for address in "${invalid_addresses[@]}"; do
+  expect_failure "invalid address ${address}" \
+    env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$SERVER_INSTALL" apply --ip "$address"
+done
+
+expect_failure "empty comma address entry" \
+  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+  "$SERVER_INSTALL" apply --ips '10.0.0.1,,10.0.0.2'
+expect_failure "embedded CIDR whitespace" \
+  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+  "$SERVER_INSTALL" apply --ips '10.0.0.1/ 24'
+
+expect_failure "zero keepalive interval" \
+  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+  "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-interval 0
+expect_failure "negative keepalive count" \
+  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+  "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-count -1
+expect_failure "oversized keepalive count" \
+  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+  "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-count 2147483648
+expect_failure "nonnumeric keepalive interval" \
+  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+  "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-interval abc
+
+detected="$(env -u SSH_CLIENT SSH_CONNECTION='198.51.100.7 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current)"
+[[ "$detected" == "198.51.100.7" ]]
+detected="$(env -u SSH_CONNECTION SSH_CLIENT='203.0.113.8 55555 22' "$SERVER_INSTALL" detect-current)"
+[[ "$detected" == "203.0.113.8" ]]
+expect_failure "invalid SSH_CONNECTION client IP" \
+  env -u SSH_CLIENT SSH_CONNECTION='999.0.0.1 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
+expect_failure "unsupported IPv6 SSH_CONNECTION client IP" \
+  env -u SSH_CLIENT SSH_CONNECTION='2001:db8::1 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
 
 SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 100.101.137.15
 SSHD_CONFIG_FILE="$tmp_conf" "$SERVER_INSTALL" status
