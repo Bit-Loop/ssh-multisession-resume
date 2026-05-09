@@ -69,6 +69,16 @@ expect_failure() {
   rm -f "$out"
 }
 
+expect_no_match() {
+  local pattern="$1"
+  local file="$2"
+
+  if grep -q -- "$pattern" "$file"; then
+    echo "unexpected match ${pattern} in ${file}" >&2
+    exit 1
+  fi
+}
+
 tmp_usage="$(mktemp)"
 "$ROOT_INSTALL" --help > "$tmp_usage"
 grep -q '^  ./ssh-multisession-resume doctor$' "$tmp_usage"
@@ -263,8 +273,8 @@ grep -q 'auto-resume.sh' "$tmp_home_existing/.profile"
 [[ ! -e "$tmp_home_existing/.bash_profile" ]]
 HOME="$tmp_home_existing" "$CLIENT_INSTALL" rollback
 grep -q '^export EXISTING_PROFILE_VALUE=1$' "$tmp_home_existing/.profile"
-! grep -q 'scoped-screen-autodetach-off' "$tmp_home_existing/.profile"
-! grep -q 'ssh-auto-resume-session' "$tmp_home_existing/.profile"
+expect_no_match 'scoped-screen-autodetach-off' "$tmp_home_existing/.profile"
+expect_no_match 'ssh-auto-resume-session' "$tmp_home_existing/.profile"
 
 tmp_conf_dir="$(mktemp -d)"
 tmp_conf="${tmp_conf_dir}/sshd_config"
@@ -340,8 +350,8 @@ SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KIL
 SSHD_CONFIG_FILE="$tmp_conf" "$SERVER_INSTALL" status
 grep -q '^Match Address 100.101.137.15$' "$tmp_conf"
 grep -q '^    SetEnv SSH_AUTO_RESUME=1$' "$tmp_conf"
-! grep -q 'Host ipad174' "$tmp_conf"
-! grep -q 'TCPKeepAlive' "$tmp_conf"
+expect_no_match 'Host ipad174' "$tmp_conf"
+expect_no_match 'TCPKeepAlive' "$tmp_conf"
 
 if SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply >/dev/null 2>&1; then
   echo "server apply accepted a missing address" >&2
@@ -358,7 +368,7 @@ detected="$(SSH_CONNECTION='100.101.137.17 55555 100.101.137.1 22' "$SERVER_INST
 [[ "$detected" == "100.101.137.17" ]]
 
 printf 'NO\n' | SSH_CONNECTION='100.101.137.19 55555 100.101.137.1 22' SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL"
-! grep -q '100.101.137.19' "$tmp_conf"
+expect_no_match '100.101.137.19' "$tmp_conf"
 
 printf 'YES\n' | SSH_CONNECTION='100.101.137.18 55555 100.101.137.1 22' SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL"
 grep -q '^Match Address 100.101.137.15,100.101.137.16,100.101.137.18$' "$tmp_conf"
@@ -389,8 +399,8 @@ if SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_
 fi
 
 SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" rollback
-! grep -q 'ssh-auto-resume' "$tmp_conf"
-! grep -q 'ssh-screen-disconnect-kill' "$tmp_conf"
+expect_no_match 'ssh-auto-resume' "$tmp_conf"
+expect_no_match 'ssh-screen-disconnect-kill' "$tmp_conf"
 
 tmp_root_home="$(mktemp -d)"
 tmp_root_conf_dir="$(mktemp -d)"
@@ -405,8 +415,8 @@ grep -q 'auto-resume.sh' "$tmp_root_home/.bash_profile"
 grep -q 'auto-resume.sh' "$tmp_root_home/.zshrc"
 HOME="$tmp_root_home" SSH_CONNECTION='100.101.137.20 55555 100.101.137.1 22' SSHD_CONFIG_FILE="$tmp_root_conf" "$ROOT_INSTALL" status
 HOME="$tmp_root_home" SSHD_CONFIG_FILE="$tmp_root_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$ROOT_INSTALL" rollback
-! grep -q 'ssh-auto-resume' "$tmp_root_conf"
-! grep -q 'ssh-screen-disconnect-kill' "$tmp_root_conf"
+expect_no_match 'ssh-auto-resume' "$tmp_root_conf"
+expect_no_match 'ssh-screen-disconnect-kill' "$tmp_root_conf"
 [[ ! -e "$tmp_root_home/.bash_profile" ]]
 [[ ! -e "$tmp_root_home/.zshrc" ]]
 

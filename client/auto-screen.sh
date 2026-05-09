@@ -1,4 +1,5 @@
 # Legacy compatibility shim.
+# shellcheck shell=bash
 # Older installed profile blocks source this file. Keep it redirecting to the
 # persistent auto-resume helper so users do not stay on kill-on-disconnect
 # behavior before reinstalling the hook.
@@ -9,7 +10,7 @@ _ssh_auto_screen_compat_main() {
   if [ -n "${SCREEN_KILL_SCREENRC:-}" ]; then
     _ssh_auto_screen_dir="$(dirname "$SCREEN_KILL_SCREENRC")"
   elif [ -n "${BASH_SOURCE:-}" ]; then
-    _ssh_auto_screen_dir="$(CDPATH= cd -- "$(dirname -- "$BASH_SOURCE")" && pwd -P)"
+    _ssh_auto_screen_dir="$(CDPATH='' cd -- "$(dirname -- "$BASH_SOURCE")" && pwd -P)"
   fi
 
   [ -n "$_ssh_auto_screen_dir" ] || return 0
@@ -19,6 +20,7 @@ _ssh_auto_screen_compat_main() {
   SSH_AUTO_RESUME_SESSION_PREFIX="${SSH_AUTO_RESUME_SESSION_PREFIX:-ssh-resume}"
 
   if [ -r "${_ssh_auto_screen_dir}/auto-resume.sh" ]; then
+    # shellcheck source=/dev/null
     . "${_ssh_auto_screen_dir}/auto-resume.sh"
   fi
 }

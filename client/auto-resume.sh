@@ -1,4 +1,5 @@
 # This file is sourced from interactive shell profiles for matched SSH sessions.
+# shellcheck shell=bash
 # Keep it POSIX-ish so both bash and zsh can source it safely.
 
 _ssh_auto_resume_main() {
@@ -28,9 +29,9 @@ _ssh_auto_resume_main() {
       if [ -e "$_ssh_auto_resume_tmp_dir" ] && { [ ! -d "$_ssh_auto_resume_tmp_dir" ] || [ ! -O "$_ssh_auto_resume_tmp_dir" ]; }; then
         return 1
       fi
-      mkdir -m 700 -p "$_ssh_auto_resume_tmp_dir" 2>/dev/null || return 1
+      mkdir -p "$_ssh_auto_resume_tmp_dir" 2>/dev/null || return 1
       [ -O "$_ssh_auto_resume_tmp_dir" ] || return 1
-      chmod 700 "$_ssh_auto_resume_tmp_dir" 2>/dev/null || true
+      chmod 700 "$_ssh_auto_resume_tmp_dir" 2>/dev/null || return 1
       printf '%s' "$_ssh_auto_resume_tmp_dir"
     fi
   }
