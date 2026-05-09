@@ -13,22 +13,29 @@ LEGACY_BLOCK_START='# BEGIN ssh-screen-disconnect-kill'
 LEGACY_BLOCK_END='# END ssh-screen-disconnect-kill'
 
 usage() {
-  cat <<'USAGE'
-Usage:
-  sudo ./install.sh
-  sudo ./install.sh apply [--ip IP] [--ip IP ...] [--ips IP[,IP...]] [--match-host HOST] [--keepalive-interval SECS] [--keepalive-count N]
-  sudo ./install.sh add-current [--ip IP]
-  ./install.sh detect-current
-  sudo ./install.sh rollback
-  sudo ./install.sh status
+  local cmd="${0:-./server/install.sh}"
 
-Defaults for apply:
-  --ip 100.101.137.15
+  cat <<USAGE
+Usage:
+  ${cmd}
+  sudo ${cmd} apply --ip IP [--ip IP ...] [--ips IP[,IP...]] [--match-host HOST] [--keepalive-interval SECS] [--keepalive-count N]
+  sudo ${cmd} apply --ips IP[,IP...] [--match-host HOST] [--keepalive-interval SECS] [--keepalive-count N]
+  sudo ${cmd} add-current [--ip IP]
+  ${cmd} detect-current
+  sudo ${cmd} rollback
+  sudo ${cmd} status
+
+Address selection:
+  apply requires --ip or --ips.
+  add-current detects the current SSH client IP or accepts --ip explicitly.
+
+Keepalive defaults:
   --keepalive-interval 15
   --keepalive-count 3
 
 Notes:
-  IP-only matching is the default. Repeat --ip or use --ips for multiple sources.
+  Any exact IPv4 address or IPv4 CIDR range is accepted.
+  Repeat --ip or use --ips for multiple sources.
   Use --match-host only if reverse DNS is reliable.
   detect-current reads SSH_CONNECTION/SSH_CLIENT and does not need root.
   The managed Match block is appended to the end of sshd_config, where Match blocks are safest.
@@ -405,7 +412,7 @@ cmd_add_current() {
   done
 
   if [[ -z "$detected" ]]; then
-    detected="$(detect_current_ip)" || die "Could not detect current SSH client IP. Use: sudo $0 add-current --ip \"\$(./install.sh detect-current)\""
+    detected="$(detect_current_ip)" || die "Could not detect current SSH client IP. Use: sudo $0 add-current --ip \"\$($0 detect-current)\""
   fi
 
   validate_address "$detected"
@@ -589,7 +596,7 @@ cmd_apply() {
   done
 
   if [[ ${#ADDRESSES[@]} -eq 0 ]]; then
-    ADDRESSES=("100.101.137.15")
+    usage_error "Missing address. Use --ip IP, --ips IP[,IP...], or add-current from an SSH session."
   fi
 
   addresses="$(join_addresses "${ADDRESSES[@]}")"

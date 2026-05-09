@@ -2,13 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-ROOT_INSTALL="${ROOT_DIR}/install.sh"
+ROOT_INSTALL="${ROOT_DIR}/ssh-multisession-resume"
 SERVER_INSTALL="${ROOT_DIR}/server/install.sh"
 CLIENT_INSTALL="${ROOT_DIR}/client/install.sh"
 AUTO_RESUME="${ROOT_DIR}/client/auto-resume.sh"
 LEGACY_AUTO_SCREEN="${ROOT_DIR}/client/auto-screen.sh"
 TMUX_CONF="${ROOT_DIR}/client/tmux-auto-resume.conf"
 SCREENRC="${ROOT_DIR}/client/screen-auto-resume.screenrc"
+ALPM_INSTALL="${ROOT_DIR}/ssh-multisession-resume.install"
 
 require_file() {
   local path="$1"
@@ -25,16 +26,24 @@ require_file "$AUTO_RESUME"
 require_file "$LEGACY_AUTO_SCREEN"
 require_file "$TMUX_CONF"
 require_file "$SCREENRC"
+require_file "$ALPM_INSTALL"
 
 bash -n "$ROOT_INSTALL"
 bash -n "$SERVER_INSTALL"
 bash -n "$CLIENT_INSTALL"
 bash -n "$AUTO_RESUME"
 bash -n "$LEGACY_AUTO_SCREEN"
+bash -n "$ALPM_INSTALL"
 if command -v zsh >/dev/null 2>&1; then
   zsh -n "$AUTO_RESUME"
   zsh -n "$LEGACY_AUTO_SCREEN"
 fi
+
+tmp_usage="$(mktemp)"
+"$ROOT_INSTALL" --help > "$tmp_usage"
+grep -q '^  ./ssh-multisession-resume doctor$' "$tmp_usage"
+SSH_MULTISESSION_RESUME_COMMAND=ssh-multisession-resume "$ROOT_INSTALL" --help > "$tmp_usage"
+grep -q '^  ssh-multisession-resume doctor$' "$tmp_usage"
 
 bash -c "SSH_AUTO_RESUME=1 SSH_AUTO_RESUME_TMUX_CONF='${TMUX_CONF}' SSH_AUTO_RESUME_SCREENRC='${SCREENRC}' SSH_CONNECTION=x . '${AUTO_RESUME}'; printf '%s\n' bash-auto-resume-guard-ok"
 bash -c "SCREEN_KILL_ON_HANGUP=1 SSH_AUTO_RESUME_TMUX_CONF='${TMUX_CONF}' SSH_AUTO_RESUME_SCREENRC='${SCREENRC}' SSH_CONNECTION=x . '${AUTO_RESUME}'; printf '%s\n' bash-legacy-auto-resume-guard-ok"
@@ -215,6 +224,11 @@ grep -q '^    SetEnv SSH_AUTO_RESUME=1$' "$tmp_conf"
 ! grep -q 'Host ipad174' "$tmp_conf"
 ! grep -q 'TCPKeepAlive' "$tmp_conf"
 
+if SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply >/dev/null 2>&1; then
+  echo "server apply accepted a missing address" >&2
+  exit 1
+fi
+
 SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 100.101.137.15 --ip 100.101.137.16
 grep -q '^Match Address 100.101.137.15,100.101.137.16$' "$tmp_conf"
 
@@ -242,6 +256,9 @@ grep -q '^Match Address 100.101.137.0/24$' "$tmp_conf"
 SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 100.101.137.15 --match-host ipad174.taile7c246.ts.net
 grep -q '^Match Address 100.101.137.15 Host ipad174.taile7c246.ts.net$' "$tmp_conf"
 
+SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips 192.168.1.50,203.0.113.0/24
+grep -q '^Match Address 192.168.1.50,203.0.113.0/24$' "$tmp_conf"
+
 if SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 999.1.1.1 >/dev/null 2>&1; then
   echo "invalid IP was accepted" >&2
   exit 1
@@ -259,8 +276,10 @@ SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KIL
 tmp_root_home="$(mktemp -d)"
 tmp_root_conf_dir="$(mktemp -d)"
 tmp_root_conf="${tmp_root_conf_dir}/sshd_config"
+tmp_root_apply_out="$(mktemp)"
 printf 'Port 22\nPasswordAuthentication no\n' > "$tmp_root_conf"
-printf 'YES\n' | HOME="$tmp_root_home" SSH_CONNECTION='100.101.137.20 55555 100.101.137.1 22' SSHD_CONFIG_FILE="$tmp_root_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$ROOT_INSTALL"
+printf 'YES\n' | HOME="$tmp_root_home" SSH_MULTISESSION_RESUME_COMMAND=ssh-multisession-resume SSH_CONNECTION='100.101.137.20 55555 100.101.137.1 22' SSHD_CONFIG_FILE="$tmp_root_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$ROOT_INSTALL" > "$tmp_root_apply_out"
+grep -q 'After reconnecting, run ssh-multisession-resume doctor to verify the active session\.' "$tmp_root_apply_out"
 grep -q '^Match Address 100.101.137.20$' "$tmp_root_conf"
 grep -q '^    SetEnv SSH_AUTO_RESUME=1$' "$tmp_root_conf"
 grep -q 'auto-resume.sh' "$tmp_root_home/.bash_profile"

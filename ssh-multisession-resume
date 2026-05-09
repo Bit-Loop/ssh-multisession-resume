@@ -4,29 +4,44 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SERVER_INSTALL="${SCRIPT_DIR}/server/install.sh"
 CLIENT_INSTALL="${SCRIPT_DIR}/client/install.sh"
+PACKAGE_COMMAND="ssh-multisession-resume"
+
+operator_command() {
+  if [[ -n "${SSH_MULTISESSION_RESUME_COMMAND:-}" ]]; then
+    printf '%s\n' "$SSH_MULTISESSION_RESUME_COMMAND"
+  elif [[ "$SCRIPT_DIR" == "/usr/lib/${PACKAGE_COMMAND}" ]]; then
+    printf '%s\n' "$PACKAGE_COMMAND"
+  else
+    printf '%s\n' "./${PACKAGE_COMMAND}"
+  fi
+}
 
 usage() {
-  cat <<'USAGE'
+  local cmd
+
+  cmd="$(operator_command)"
+
+  cat <<USAGE
 Usage:
-  ./install.sh
-  ./install.sh apply
-  ./install.sh doctor
-  ./install.sh status
-  ./install.sh sessions
-  ./install.sh monitor [--interval SECS]
-  ./install.sh deps
-  ./install.sh service-install
-  ./install.sh service-status
-  ./install.sh service-rollback
-  ./install.sh rollback
-  ./install.sh detect-current
+  ${cmd}
+  ${cmd} apply
+  ${cmd} doctor
+  ${cmd} status
+  ${cmd} sessions
+  ${cmd} monitor [--interval SECS]
+  ${cmd} deps
+  ${cmd} service-install
+  ${cmd} service-status
+  ${cmd} service-rollback
+  ${cmd} rollback
+  ${cmd} detect-current
 
 Default behavior:
   Detect the current SSH client IP, ask whether to add it, update SSHD through
   sudo when needed, and install the current user's shell hook.
 
-Run this from the repo root without sudo. The script asks for sudo only for the
-system SSHD change.
+Run the operator command without sudo. It asks for sudo only for the system
+SSHD change.
 USAGE
 }
 
@@ -348,7 +363,7 @@ cmd_apply() {
 
   echo
   echo "Install complete. Log out and reconnect from this SSH client."
-  echo "After reconnecting, run ./install.sh doctor to verify the active session."
+  echo "After reconnecting, run $(operator_command) doctor to verify the active session."
 }
 
 cmd_status() {

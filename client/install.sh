@@ -16,15 +16,17 @@ SNAP_EXT=".screen-hangup-snapshot"
 CREATED_EXT=".screen-hangup-created"
 
 usage() {
-  cat <<'USAGE'
+  local cmd="${0:-./client/install.sh}"
+
+  cat <<USAGE
 Usage:
-  ./install.sh apply
-  ./install.sh rollback
-  ./install.sh status
-  ./install.sh sessions
-  ./install.sh service-install
-  ./install.sh service-status
-  ./install.sh service-rollback
+  ${cmd} apply
+  ${cmd} rollback
+  ${cmd} status
+  ${cmd} sessions
+  ${cmd} service-install
+  ${cmd} service-status
+  ${cmd} service-rollback
 
 Notes:
   Bash login shells are hooked through .bash_profile, .bash_login, or .profile.

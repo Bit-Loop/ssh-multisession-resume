@@ -1,11 +1,11 @@
-# SSH Auto-Resume
+# SSH Multisession Resume
 
 Keep your SSH terminal exactly where you left it.
 
-`ssh-auto-resume` automatically attaches selected interactive SSH logins to a
-managed `tmux` session. Disconnect from a laptop, tablet, or phone, reconnect
-later, and land back in the same shell with the same running programs, panes,
-and scrollback.
+`ssh-multisession-resume` automatically attaches selected interactive SSH
+logins to a managed `tmux` session. Disconnect from a laptop, tablet, or phone,
+reconnect later, and land back in the same shell with the same running
+programs, panes, and scrollback.
 
 `tmux` is preferred. `screen` is used only as a fallback.
 
@@ -30,12 +30,19 @@ After
 
 ## Quick Start
 
-Run the installer from the SSH session you want to preserve:
+If you installed the package, run the command from the SSH session you want to
+preserve:
 
 ```bash
-git clone https://github.com/<you>/ssh-auto-resume.git
-cd ssh-auto-resume
-./install.sh
+ssh-multisession-resume
+```
+
+If you are running from a source checkout instead:
+
+```bash
+git clone https://github.com/Bit-Loop/ssh-multisession-resume.git
+cd ssh-multisession-resume
+./ssh-multisession-resume
 ```
 
 When asked to add the current SSH client IP, choose `YES`.
@@ -58,7 +65,7 @@ ssh your-server
 Verify the new login:
 
 ```bash
-./install.sh doctor
+ssh-multisession-resume doctor
 ```
 
 Success ends with:
@@ -94,7 +101,7 @@ already inside `tmux` or `screen` are left alone.
 Multiple SSH logins from the same user and source IP get separate slots.
 
 ```text
-source IP 100.101.137.15
+source IP 192.168.1.50
         |
         +-- slot 0: default login
         +-- slot 1: second live login
@@ -107,22 +114,76 @@ existing work instead of creating a new empty terminal.
 Managed `tmux` session names look like:
 
 ```text
-ip-100_101_137_15-0
-ip-100_101_137_15-1
+ip-192_168_1_50-0
+ip-192_168_1_50-1
 ```
 
 ## Daily Commands
 
-| Command | Purpose |
-| --- | --- |
-| `./install.sh` | Install or update the normal setup |
-| `./install.sh doctor` | Verify the current SSH login is attached correctly |
-| `./install.sh status` | Show SSHD and shell-hook status |
-| `./install.sh sessions` | List managed `tmux` and fallback `screen` sessions |
-| `./install.sh monitor` | Watch managed sessions refresh in place |
-| `./install.sh deps` | Install or check `tmux`/`screen` dependencies |
-| `./install.sh service-install` | Install the optional user service |
-| `./install.sh rollback` | Remove SSHD config, service, and shell hooks |
+Use `ssh-multisession-resume` after installing the package. Use
+`./ssh-multisession-resume` only when running from a source checkout.
+
+| Package command | Source checkout command | Purpose |
+| --- | --- | --- |
+| `ssh-multisession-resume` | `./ssh-multisession-resume` | Install or update the normal setup |
+| `ssh-multisession-resume doctor` | `./ssh-multisession-resume doctor` | Verify the current SSH login is attached correctly |
+| `ssh-multisession-resume status` | `./ssh-multisession-resume status` | Show SSHD and shell-hook status |
+| `ssh-multisession-resume sessions` | `./ssh-multisession-resume sessions` | List managed `tmux` and fallback `screen` sessions |
+| `ssh-multisession-resume monitor` | `./ssh-multisession-resume monitor` | Watch managed sessions refresh in place |
+| `ssh-multisession-resume deps` | `./ssh-multisession-resume deps` | Install or check `tmux`/`screen` dependencies |
+| `ssh-multisession-resume service-install` | `./ssh-multisession-resume service-install` | Install the optional user service |
+| `ssh-multisession-resume rollback` | `./ssh-multisession-resume rollback` | Remove SSHD config, service, and shell hooks |
+
+The packaged command is a wrapper. It runs the same root installer from
+`/usr/lib/ssh-multisession-resume/ssh-multisession-resume`, but help text and
+completion hints should still name `ssh-multisession-resume`.
+
+## Package Updates
+
+For the AUR `ssh-multisession-resume-git` package, code updates come from the
+upstream Git repository through `pkgver()`. AUR helpers may not rebuild VCS
+packages during a plain system upgrade unless development-package updates are
+enabled.
+
+Common update commands:
+
+```bash
+paru -Syu --devel
+yay -Syu --devel
+```
+
+From a local package checkout:
+
+```bash
+git pull
+makepkg -Csi
+```
+
+When updating AUR metadata after changing `PKGBUILD`, regenerate `.SRCINFO` in
+the AUR package repository:
+
+```bash
+makepkg --printsrcinfo > .SRCINFO
+```
+
+When the packaged source files change, push the GitHub source repository first.
+Then regenerate `.SRCINFO` in the AUR package repository so `pkgver()` reflects
+the commit users will build.
+
+Package upgrades replace the package-owned command and helper files under
+`/usr/bin` and `/usr/lib/ssh-multisession-resume`. They intentionally do not
+rewrite host-owned state such as `/etc/ssh/sshd_config`, shell profile hooks,
+or the optional user systemd unit.
+
+After upgrading, check the active install:
+
+```bash
+ssh-multisession-resume status
+```
+
+Re-run `ssh-multisession-resume` from the SSH login you want to preserve when
+you need to add a new client IP or when release notes mention SSHD or hook
+behavior changes.
 
 ## Test Persistence
 
@@ -147,8 +208,8 @@ The optional systemd user service keeps the managed `tmux` server ready across
 host boots and user logins:
 
 ```bash
-./install.sh service-install
-./install.sh service-status
+ssh-multisession-resume service-install
+ssh-multisession-resume service-status
 ```
 
 This keeps the `tmux` server available. It does not restore programs after a
@@ -157,7 +218,7 @@ full reboot; programs survive SSH disconnects, not machine shutdowns.
 Remove the service:
 
 ```bash
-./install.sh service-rollback
+ssh-multisession-resume service-rollback
 ```
 
 ## Rollback
@@ -165,7 +226,7 @@ Remove the service:
 To undo the normal setup:
 
 ```bash
-./install.sh rollback
+ssh-multisession-resume rollback
 ```
 
 Rollback removes:
@@ -176,30 +237,9 @@ Rollback removes:
 
 It does not kill unrelated user sessions.
 
-## Lower-Level Commands
+## Smoke Checks
 
-Most users should use `./install.sh`. These lower-level commands are useful
-when you want to inspect or script individual pieces.
-
-Detect the current SSH client IP:
-
-```bash
-./server/install.sh detect-current
-```
-
-Add a specific IP to the SSHD match list:
-
-```bash
-sudo ./server/install.sh add-current --ip 100.101.137.15
-```
-
-Install only the current user's shell hook:
-
-```bash
-./client/install.sh apply
-```
-
-Run smoke checks:
+From a source checkout, run smoke checks with:
 
 ```bash
 ./tests/smoke.sh
@@ -209,7 +249,7 @@ Run smoke checks:
 
 | Path | Purpose |
 | --- | --- |
-| `install.sh` | Main installer and operator command |
+| `ssh-multisession-resume` | Main source-checkout operator command |
 | `server/install.sh` | SSHD match-block install, status, and rollback |
 | `server/01-sshd-auto-resume.conf` | Static reference SSHD snippet |
 | `client/install.sh` | Shell hook, session listing, and user service setup |
@@ -221,7 +261,9 @@ Run smoke checks:
 ## Notes
 
 - Linux/OpenSSH is assumed.
-- Exact IPv4 addresses and IPv4 CIDR ranges are supported.
+- Exact IPv4 addresses and IPv4 CIDR ranges from any IPv4 network are
+  supported. It is not limited to Tailscale or `100.x.x.x` addresses.
+- IPv6 matching is not implemented yet.
 - Multi-IP matching is emitted as one OpenSSH criteria value:
   `Match Address ip1,ip2`.
 - The managed SSHD block is appended to the end of `sshd_config` because
