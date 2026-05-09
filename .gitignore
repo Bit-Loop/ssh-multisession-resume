@@ -1,6 +1,7 @@
 # Local Codex/agent workspace state
 .agents/
 .codex/
+.aur/
 
 # Local environment and secrets
 .env
