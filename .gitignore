@@ -39,9 +39,15 @@ __pycache__/
 .pytest_cache/
 
 # Packaged release artifacts
+pkg/
+src/
+/ssh-multisession-resume/
 *.tar
 *.tar.gz
 *.tgz
+*.src.tar.*
+*.pkg.tar.*
+*.pkg.tar.*.sig
 *.zip
 *.7z
 *.deb
