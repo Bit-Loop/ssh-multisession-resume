@@ -96,20 +96,21 @@ ensure_profile() {
 
 remove_block_inline() {
   local file="$1"
-  local tmp
 
-  tmp="$(mktemp)"
-  awk \
-    -v start="$BLOCK_START" \
-    -v end="$BLOCK_END" \
-    -v legacy_start="$LEGACY_BLOCK_START" \
-    -v legacy_end="$LEGACY_BLOCK_END" '
-    $0 == start || $0 == legacy_start { skip = 1; next }
-    $0 == end || $0 == legacy_end { skip = 0; next }
-    !skip { print }
-  ' "$file" > "$tmp"
-  cat "$tmp" > "$file"
-  rm -f "$tmp"
+  (
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+    awk \
+      -v start="$BLOCK_START" \
+      -v end="$BLOCK_END" \
+      -v legacy_start="$LEGACY_BLOCK_START" \
+      -v legacy_end="$LEGACY_BLOCK_END" '
+      $0 == start || $0 == legacy_start { skip = 1; next }
+      $0 == end || $0 == legacy_end { skip = 0; next }
+      !skip { print }
+    ' "$file" > "$tmp"
+    cat "$tmp" > "$file"
+  )
 }
 
 maybe_remove_created_profile() {
@@ -343,7 +344,7 @@ cmd_status() {
 
 cmd_sessions() {
   local socket
-  local name attached windows state session_field rest tmux_sessions
+  local name attached windows state session_field rest tmux_sessions=""
   local printed=0
 
   socket="$(socket_name)"
@@ -352,6 +353,7 @@ cmd_sessions() {
   if command -v tmux >/dev/null 2>&1; then
     echo "tmux sessions:"
     tmux_sessions="$(mktemp)"
+    trap 'rm -f "${tmux_sessions:-}"' EXIT INT TERM HUP
     if tmux -L "$socket" list-sessions -F '#{session_name}|#{session_attached}|#{session_windows}' > "$tmux_sessions" 2>/dev/null; then
       if [[ -s "$tmux_sessions" ]]; then
         while IFS='|' read -r name attached windows; do
@@ -365,6 +367,7 @@ cmd_sessions() {
       echo "  none"
     fi
     rm -f "$tmux_sessions"
+    trap - EXIT INT TERM HUP
   else
     echo "tmux sessions:"
     echo "  tmux: missing"

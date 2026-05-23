@@ -260,24 +260,25 @@ reload_sshd() {
 
 remove_managed_block() {
   local file="$1"
-  local tmp
 
   if ! grep -qF "$BLOCK_START" "$file" && ! grep -qF "$LEGACY_BLOCK_START" "$file"; then
     return 0
   fi
 
-  tmp="$(mktemp)"
-  awk \
-    -v start="$BLOCK_START" \
-    -v end="$BLOCK_END" \
-    -v legacy_start="$LEGACY_BLOCK_START" \
-    -v legacy_end="$LEGACY_BLOCK_END" '
-    $0 == start || $0 == legacy_start { skip = 1; next }
-    $0 == end || $0 == legacy_end { skip = 0; next }
-    !skip { print }
-  ' "$file" > "$tmp"
-  cat "$tmp" > "$file"
-  rm -f "$tmp"
+  (
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+    awk \
+      -v start="$BLOCK_START" \
+      -v end="$BLOCK_END" \
+      -v legacy_start="$LEGACY_BLOCK_START" \
+      -v legacy_end="$LEGACY_BLOCK_END" '
+      $0 == start || $0 == legacy_start { skip = 1; next }
+      $0 == end || $0 == legacy_end { skip = 0; next }
+      !skip { print }
+    ' "$file" > "$tmp"
+    cat "$tmp" > "$file"
+  )
 }
 
 append_managed_block() {
@@ -640,6 +641,7 @@ cmd_apply() {
 
   candidate="$(mktemp)"
   restore_tmp="$(mktemp)"
+  trap 'rm -f "${candidate:-}" "${restore_tmp:-}"' EXIT INT TERM HUP
   created_backup=0
   cp "$SSHD_CONFIG" "$candidate"
   cp "$SSHD_CONFIG" "$restore_tmp"
@@ -672,6 +674,7 @@ cmd_apply() {
   fi
 
   rm -f "$restore_tmp"
+  trap - EXIT INT TERM HUP
 
   echo "Installed managed block in ${SSHD_CONFIG}."
   if [[ -n "$match_host" ]]; then
@@ -682,12 +685,13 @@ cmd_apply() {
 }
 
 cmd_rollback() {
-  local restore_tmp
+  local restore_tmp=""
   local snap
 
   snap="$(existing_backup)"
   if [[ -n "$snap" ]]; then
     restore_tmp="$(mktemp)"
+    trap 'rm -f "${restore_tmp:-}"' EXIT INT TERM HUP
     cp "$SSHD_CONFIG" "$restore_tmp"
     cp "$snap" "$SSHD_CONFIG"
     if ! reload_sshd; then
@@ -696,12 +700,14 @@ cmd_rollback() {
       die "Rollback reload failed; previous config state was restored."
     fi
     rm -f "$restore_tmp" "$snap"
+    trap - EXIT INT TERM HUP
     echo "Restored ${SSHD_CONFIG} from backup."
     return
   fi
 
   if [[ -f "$SSHD_CONFIG" ]] && { grep -qF "$BLOCK_START" "$SSHD_CONFIG" || grep -qF "$LEGACY_BLOCK_START" "$SSHD_CONFIG"; }; then
     restore_tmp="$(mktemp)"
+    trap 'rm -f "${restore_tmp:-}"' EXIT INT TERM HUP
     cp "$SSHD_CONFIG" "$restore_tmp"
     remove_managed_block "$SSHD_CONFIG"
     if ! reload_sshd; then
@@ -710,6 +716,7 @@ cmd_rollback() {
       die "Rollback reload failed; previous config state was restored."
     fi
     rm -f "$restore_tmp"
+    trap - EXIT INT TERM HUP
     echo "Removed managed block from ${SSHD_CONFIG}."
     return
   fi

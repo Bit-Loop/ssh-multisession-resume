@@ -23,25 +23,31 @@ usage() {
 
   cat <<USAGE
 Usage:
-  ${cmd}
-  ${cmd} apply
-  ${cmd} doctor
-  ${cmd} status
-  ${cmd} sessions
-  ${cmd} monitor [--interval SECS]
-  ${cmd} deps
-  ${cmd} service-install
-  ${cmd} service-status
-  ${cmd} service-rollback
-  ${cmd} rollback
-  ${cmd} detect-current
+  ${cmd}                                show status and saved policies
+  ${cmd} doctor                         diagnose the current SSH session
+  ${cmd} status                         show install + hook status
+  ${cmd} sessions                       list managed tmux/screen sessions
+  ${cmd} monitor [--interval SECS]      watch managed sessions
+  ${cmd} policy show                    list saved per-IP choices
+  ${cmd} policy set IP MODE             save a choice (single|multi|skip)
+  ${cmd} policy forget IP               drop the saved choice for IP
+  ${cmd} policy clear                   drop all saved choices
+  ${cmd} opt-out                        disable the SSH menu for this user
+  ${cmd} opt-in                         re-enable the SSH menu for this user
+  ${cmd} detect-current                 print the current SSH client IP
+  ${cmd} deps                           check or install tmux/screen
 
-Default behavior:
-  Detect the current SSH client IP, ask whether to add it, update SSHD through
-  sudo when needed, and install the current user's shell hook.
+Advanced / source-checkout commands:
+  ${cmd} apply                          install the per-user shell hook
+                                        (the AUR package does this for you)
+  ${cmd} rollback                       remove the per-user shell hook + SSHD block
+  ${cmd} service-install                install systemd user keepalive
+  ${cmd} service-status                 show keepalive unit state
+  ${cmd} service-rollback               remove keepalive unit
 
-Run the operator command without sudo. It asks for sudo only for the system
-SSHD change.
+When installed from the AUR package, no setup is needed. Just open a new SSH
+session, pick single / multi / skip in the menu, and your choice is remembered
+across reboots.
 USAGE
 }
 
@@ -519,6 +525,199 @@ cmd_doctor() {
   fi
 }
 
+policy_dir() {
+  local user home
+  user="$(target_client_user)"
+  home="$(target_client_home "$user")"
+  printf '%s\n' "${XDG_CONFIG_HOME:-${home}/.config}/ssh-multisession-resume"
+}
+
+policy_choices_dir() {
+  printf '%s/choices\n' "$(policy_dir)"
+}
+
+policy_optout_path() {
+  printf '%s/opt-out\n' "$(policy_dir)"
+}
+
+sanitize_ip_for_path() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'
+}
+
+valid_policy_mode() {
+  case "$1" in
+    single|multi|skip) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+policy_show() {
+  local dir
+  dir="$(policy_choices_dir)"
+  if [[ ! -d "$dir" ]]; then
+    echo "(no saved policies)" 2>/dev/null || true
+    return 0
+  fi
+
+  local found=0
+  local entry mode name
+  while IFS= read -r -d '' entry; do
+    name="$(basename "$entry")"
+    mode="$(head -n 1 "$entry" 2>/dev/null || true)"
+    [[ -n "$mode" ]] || mode="(empty)"
+    # Tolerate broken-pipe writes (`policy show | head`, `... | grep -q`).
+    printf '  %s -> %s\n' "$name" "$mode" 2>/dev/null || return 0
+    found=1
+  done < <(find "$dir" -maxdepth 1 -type f -print0 2>/dev/null)
+
+  if [[ "$found" -eq 0 ]]; then
+    echo "(no saved policies)" 2>/dev/null || true
+  fi
+}
+
+cmd_policy() {
+  local sub="${1:-show}"
+  [[ $# -gt 0 ]] && shift
+
+  case "$sub" in
+    show|list)
+      policy_show
+      ;;
+    set)
+      local ip="${1:-}" mode="${2:-}"
+      [[ -n "$ip" && -n "$mode" ]] || die "Usage: $(operator_command) policy set IP single|multi|skip"
+      valid_policy_mode "$mode" || die "Invalid mode: ${mode} (use single, multi, or skip)"
+      local safe choices_dir
+      safe="$(sanitize_ip_for_path "$ip")"
+      [[ -n "$safe" ]] || die "Empty IP after sanitization."
+      choices_dir="$(policy_choices_dir)"
+      mkdir -p "$choices_dir"
+      chmod 700 "$(policy_dir)" 2>/dev/null || true
+      printf '%s\n' "$mode" > "${choices_dir}/${safe}"
+      echo "Saved policy: ${safe} -> ${mode}"
+      ;;
+    forget|drop|delete|rm)
+      local ip="${1:-}"
+      [[ -n "$ip" ]] || die "Usage: $(operator_command) policy forget IP"
+      local safe choices_dir
+      safe="$(sanitize_ip_for_path "$ip")"
+      [[ -n "$safe" ]] || die "Empty IP after sanitization."
+      choices_dir="$(policy_choices_dir)"
+      if [[ -f "${choices_dir}/${safe}" ]]; then
+        rm -f "${choices_dir}/${safe}"
+        echo "Forgot policy: ${safe}"
+      else
+        echo "No saved policy for: ${safe}"
+      fi
+      ;;
+    clear|reset)
+      local choices_dir
+      choices_dir="$(policy_choices_dir)"
+      if [[ -d "$choices_dir" ]]; then
+        find "$choices_dir" -maxdepth 1 -type f -delete 2>/dev/null || true
+        echo "Cleared all saved policies."
+      else
+        echo "(no saved policies)"
+      fi
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      die "Unknown policy subcommand: ${sub}"
+      ;;
+  esac
+}
+
+cmd_opt_out() {
+  local dir path
+  dir="$(policy_dir)"
+  path="$(policy_optout_path)"
+  mkdir -p "$dir"
+  chmod 700 "$dir" 2>/dev/null || true
+  : > "$path"
+  echo "Opt-out marker written: ${path}"
+  echo "New SSH sessions for this user will skip the auto-resume menu."
+}
+
+cmd_opt_in() {
+  local path
+  path="$(policy_optout_path)"
+  if [[ -f "$path" ]]; then
+    rm -f "$path"
+    echo "Removed opt-out marker: ${path}"
+  else
+    echo "No opt-out marker found at ${path} (already opted in)."
+  fi
+}
+
+cmd_summary() {
+  require_file "$SERVER_INSTALL"
+  require_file "$CLIENT_INSTALL"
+
+  local hook_path="/etc/profile.d/ssh-multisession-resume.sh"
+  echo "Install:"
+  if [[ -r "$hook_path" ]]; then
+    echo "  system hook: ${hook_path} (installed)"
+  else
+    echo "  system hook: not installed at ${hook_path}"
+    echo "                (install the AUR package, or run \`$(operator_command) apply\` for"
+    echo "                 a per-user shell hook from a source checkout)"
+  fi
+
+  if command -v tmux >/dev/null 2>&1; then
+    echo "  tmux: present"
+  else
+    echo "  tmux: missing"
+  fi
+  if command -v screen >/dev/null 2>&1; then
+    echo "  screen: present"
+  else
+    echo "  screen: missing"
+  fi
+
+  echo
+  echo "This session:"
+  if [[ -n "${SSH_CONNECTION:-}${SSH_CLIENT:-}${SSH_TTY:-}" ]]; then
+    local ip=""
+    ip="$(detect_current_ip 2>/dev/null || true)"
+    echo "  ssh: yes${ip:+ (from ${ip})}"
+  else
+    echo "  ssh: no"
+  fi
+  if [[ -n "${TMUX:-}" ]]; then
+    local sname=""
+    sname="$(tmux display-message -p '#S' 2>/dev/null || true)"
+    echo "  inside tmux: yes${sname:+ (${sname})}"
+  fi
+  if [[ -n "${STY:-}" ]]; then
+    echo "  inside screen: yes (${STY})"
+  fi
+
+  echo
+  echo "Saved policies:"
+  policy_show
+
+  local optout
+  optout="$(policy_optout_path)"
+  if [[ -f "$optout" ]]; then
+    echo
+    echo "Opt-out marker present at ${optout}"
+    echo "Remove with: $(operator_command) opt-in"
+  fi
+
+  echo
+  echo "Next steps:"
+  if [[ -r "$hook_path" ]]; then
+    echo "  Just SSH in from a new client. The menu will appear on first connect"
+    echo "  and your choice will be remembered. Run \`$(operator_command) doctor\`"
+    echo "  inside the SSH session to verify it landed in a managed tmux session."
+  else
+    echo "  Install the AUR package, or run \`$(operator_command) apply\` from this"
+    echo "  source checkout to install a per-user shell hook."
+  fi
+}
+
 cmd_rollback() {
   require_file "$SERVER_INSTALL"
   require_file "$CLIENT_INSTALL"
@@ -528,12 +727,15 @@ cmd_rollback() {
   run_client rollback
 }
 
-ACTION="${1:-apply}"
+ACTION="${1:-summary}"
 if [[ $# -gt 0 ]]; then
   shift
 fi
 
 case "$ACTION" in
+  summary)
+    cmd_summary "$@"
+    ;;
   apply)
     cmd_apply "$@"
     ;;
@@ -551,6 +753,15 @@ case "$ACTION" in
     ;;
   deps)
     cmd_deps "$@"
+    ;;
+  policy)
+    cmd_policy "$@"
+    ;;
+  opt-out)
+    cmd_opt_out "$@"
+    ;;
+  opt-in)
+    cmd_opt_in "$@"
     ;;
   service-install)
     cmd_service_install "$@"

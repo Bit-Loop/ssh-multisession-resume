@@ -28,73 +28,85 @@ After
   reconnect returns to the same work
 ```
 
-## Quick Start
-
-If you installed the package, run the command from the SSH session you want to
-preserve:
+## Quick Start (AUR package)
 
 ```bash
-ssh-multisession-resume
+pacman -S ssh-multisession-resume-git    # or yay / paru
 ```
 
-If you are running from a source checkout instead:
+Then just SSH in. On the first connect from any source IP, a menu asks
+whether you want:
+
+```text
+[1] single  one persistent session shared across reconnects
+[2] multi   fresh session per connect; concurrent slots OK
+[3] skip    plain shell; do not auto-attach this source
+```
+
+Your choice is saved under `~/.config/ssh-multisession-resume/choices/`
+and persists across reboots. To change it later:
 
 ```bash
-git clone https://github.com/Bit-Loop/ssh-multisession-resume.git
-cd ssh-multisession-resume
-./ssh-multisession-resume
+ssh-multisession-resume policy set 192.168.1.5 single
+ssh-multisession-resume policy forget 192.168.1.5    # re-prompt next connect
 ```
 
-When asked to add the current SSH client IP, choose `YES`.
-
-The installer:
-
-- detects your current SSH client IP
-- adds a managed `Match Address` block to `sshd_config`
-- installs a bash/zsh login hook for your user
-- offers to install `tmux`/`screen` if neither is available
-- asks for `sudo` only when changing the system SSHD config
-
-Then reconnect:
+To disable the menu entirely for your user:
 
 ```bash
-exit
-ssh your-server
+ssh-multisession-resume opt-out
 ```
 
-Verify the new login:
+Verify a managed session inside the SSH window:
 
 ```bash
 ssh-multisession-resume doctor
 ```
 
-Success ends with:
+## Source-checkout install
 
-```text
-doctor: ok
+If you're running from a clone instead of the AUR package, install the
+per-user shell hook manually:
+
+```bash
+git clone https://github.com/Bit-Loop/ssh-multisession-resume.git
+cd ssh-multisession-resume
+./ssh-multisession-resume apply
 ```
 
-## What It Does
+The legacy `apply` flow patches `~/.bash_profile`/`.zshrc` and (with
+sudo) adds an `sshd_config` Match block for ClientAlive tuning. Both
+are *optional* with the new system-wide profile.d hook.
+
+## How It Works
 
 ```text
-matching SSH login
+SSH login on /etc/profile.d/<...>.sh
         |
         v
-SSHD sets SSH_AUTO_RESUME=1
+detect interactive + SSH + not-in-mux + not opted out
         |
         v
-bash/zsh profile loads client/auto-resume.sh
+load policy for source IP (or prompt menu on first connect)
         |
         v
-attach to managed tmux slot
+attach to managed tmux session
         |
         v
 your shell keeps running across disconnects
 ```
 
-Only matched interactive SSH logins are attached. Normal noninteractive commands
-like `ssh host uptime`, scp-style commands, shells without a TTY, and shells
-already inside `tmux` or `screen` are left alone.
+Only matched interactive SSH logins are attached. Normal noninteractive
+commands like `ssh host uptime`, scp-style commands, shells without a TTY,
+and shells already inside `tmux` or `screen` are left alone.
+
+### Single vs Multi
+
+| Mode    | Slot pick                           | Multiple connections from same IP |
+|---------|-------------------------------------|------------------------------------|
+| single  | always slot 0                       | tmux multi-attach (mirrored view)  |
+| multi   | first free slot under per-IP cap    | parallel independent sessions      |
+| skip    | none — plain shell                  | n/a                                |
 
 ## Session Slots
 
@@ -275,3 +287,57 @@ are enabled.
   reachable.
 - To intentionally end preserved work, exit the shells/programs inside the
   managed session or run `tmux kill-session` for that session.
+
+## X11 and Wayland Forwarding Behavior
+
+If you forward a graphical session over SSH (`ssh -X`/`-Y` for X11,
+`waypipe ssh` / `wayvnc` for Wayland), a few quirks are worth knowing
+about. None of them are leaks caused by this tool, but the tool's whole
+point is that you reconnect to the same session repeatedly, so they
+become more visible than usual.
+
+- **New panes get fresh display env; existing panes do not.** On reattach,
+  `tmux` refreshes its session env from the attaching client. The pinned
+  refresh list in `client/tmux-auto-resume.conf` covers `DISPLAY`,
+  `WAYLAND_DISPLAY`, `XAUTHORITY`, `SSH_AUTH_SOCK`, `SSH_AGENT_PID`,
+  `SSH_CONNECTION`, and the rest of the tmux >= 3.x defaults. New
+  windows or panes opened after reconnecting see the live values.
+  Already-running shells keep whatever env they were forked with - a
+  Unix limitation, not a tmux bug. Run
+  `eval "$(tmux showenv -s DISPLAY WAYLAND_DISPLAY SSH_AUTH_SOCK)"`
+  inside an existing pane if you need to refresh it manually.
+- **`~/.Xauthority` grows over time.** OpenSSH appends an auth cookie per
+  X11-forwarded session and does not remove it on disconnect. Over many
+  reconnects the file accumulates stale entries. To clean up safely:
+  ```bash
+  : > ~/.Xauthority   # truncate, then reconnect to repopulate
+  ```
+  Prefer `ssh -Y` only when you actually need it.
+- **Wayland sockets are managed by the forwarding tool.** `waypipe` and
+  similar bridges create their own per-session socket under
+  `$XDG_RUNTIME_DIR` and remove it on disconnect, so there's nothing to
+  clean up after them. The only thing to refresh is `WAYLAND_DISPLAY` in
+  long-lived shells (see above).
+- **`screen` fallback does not auto-refresh env.** Unlike `tmux`, `screen`
+  has no `update-environment` equivalent. After reconnecting, run inside
+  a fresh screen window:
+  ```bash
+  screen -X setenv DISPLAY "$DISPLAY"
+  screen -X setenv WAYLAND_DISPLAY "$WAYLAND_DISPLAY"
+  # or just export the vars directly
+  ```
+- **GUI processes that were running when SSH dropped will stay alive
+  inside tmux but hold dead display connections.** Kill and restart them
+  after reconnecting; the tool cannot revive the X11/Wayland socket they
+  were attached to.
+
+## Tuning Environment Variables
+
+A few env vars affect the auto-resume client hook:
+
+- `SSH_AUTO_RESUME_MAX_SLOTS` (default `64`) - cap on per-IP session slots
+  before "no free slot" is returned.
+- `SSH_AUTO_RESUME_LOCK_RETRIES` (default `50`) - retry budget on the slot
+  lock; each retry sleeps `0.1s`, so the default is a 5s timeout. Raise
+  this on heavily loaded hosts where many concurrent SSH connections may
+  contend for the same lock.

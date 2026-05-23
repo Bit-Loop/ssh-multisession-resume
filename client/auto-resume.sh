@@ -53,7 +53,7 @@ _ssh_auto_resume_main() {
       fi
 
       _ssh_auto_resume_wait=$((_ssh_auto_resume_wait + 1))
-      if [ "$_ssh_auto_resume_wait" -gt 50 ]; then
+      if [ "$_ssh_auto_resume_wait" -gt "${SSH_AUTO_RESUME_LOCK_RETRIES:-50}" ]; then
         printf '%s\n' "Timed out waiting for SSH auto-resume slot lock." >&2
         return 1
       fi
@@ -109,6 +109,12 @@ _ssh_auto_resume_main() {
   }
 
   _ssh_auto_resume_select_tmux() {
+    if [ "${_ssh_auto_resume_mode:-multi}" = "single" ]; then
+      _ssh_auto_resume_selected="${_ssh_auto_resume_session_base}-0"
+      _ssh_auto_resume_selected_slot=0
+      return 0
+    fi
+
     _ssh_auto_resume_slot=0
     _ssh_auto_resume_max="${SSH_AUTO_RESUME_MAX_SLOTS:-64}"
 
@@ -168,6 +174,12 @@ _ssh_auto_resume_main() {
   }
 
   _ssh_auto_resume_select_screen() {
+    if [ "${_ssh_auto_resume_mode:-multi}" = "single" ]; then
+      _ssh_auto_resume_selected="${_ssh_auto_resume_session_base}-0"
+      _ssh_auto_resume_selected_slot=0
+      return 0
+    fi
+
     _ssh_auto_resume_slot=0
     _ssh_auto_resume_max="${SSH_AUTO_RESUME_MAX_SLOTS:-64}"
 
@@ -212,21 +224,21 @@ _ssh_auto_resume_main() {
 
   _ssh_auto_resume_run_screen() {
     _ssh_auto_resume_status=0
-    _ssh_auto_resume_screen_args=""
+    _ssh_auto_resume_has_screenrc=0
     _ssh_auto_resume_unlock
     if [ -n "${SSH_AUTO_RESUME_SCREENRC:-}" ] && [ -r "$SSH_AUTO_RESUME_SCREENRC" ]; then
-      _ssh_auto_resume_screen_args="-c $SSH_AUTO_RESUME_SCREENRC"
+      _ssh_auto_resume_has_screenrc=1
     fi
 
     if [ "$(_ssh_auto_resume_screen_state "$_ssh_auto_resume_selected")" = "detached" ]; then
-      if [ -n "$_ssh_auto_resume_screen_args" ]; then
+      if [ "$_ssh_auto_resume_has_screenrc" = "1" ]; then
         screen -c "$SSH_AUTO_RESUME_SCREENRC" -r "$_ssh_auto_resume_selected"
       else
         screen -r "$_ssh_auto_resume_selected"
       fi
       _ssh_auto_resume_status=$?
     else
-      if [ -n "$_ssh_auto_resume_screen_args" ]; then
+      if [ "$_ssh_auto_resume_has_screenrc" = "1" ]; then
         screen -c "$SSH_AUTO_RESUME_SCREENRC" -S "$_ssh_auto_resume_selected"
       else
         screen -S "$_ssh_auto_resume_selected"
@@ -235,6 +247,70 @@ _ssh_auto_resume_main() {
     fi
     _ssh_auto_resume_cleanup
     exit "$_ssh_auto_resume_status"
+  }
+
+  _ssh_auto_resume_policy_dir() {
+    printf '%s/ssh-multisession-resume' "${XDG_CONFIG_HOME:-${HOME:-/}/.config}"
+  }
+
+  _ssh_auto_resume_choice_path() {
+    printf '%s/choices/%s' "$(_ssh_auto_resume_policy_dir)" "$1"
+  }
+
+  _ssh_auto_resume_read_choice() {
+    _ssh_auto_resume_choice=""
+    _ssh_auto_resume_choice_file="$(_ssh_auto_resume_choice_path "$1")"
+    [ -f "$_ssh_auto_resume_choice_file" ] || return 1
+    IFS= read -r _ssh_auto_resume_choice < "$_ssh_auto_resume_choice_file" || return 1
+    case "$_ssh_auto_resume_choice" in
+      single|multi|skip) return 0 ;;
+      *) _ssh_auto_resume_choice=""; return 1 ;;
+    esac
+  }
+
+  _ssh_auto_resume_save_choice() {
+    _ssh_auto_resume_save_dir="$(_ssh_auto_resume_policy_dir)/choices"
+    mkdir -p "$_ssh_auto_resume_save_dir" 2>/dev/null || return 1
+    chmod 700 "$(_ssh_auto_resume_policy_dir)" 2>/dev/null || true
+    printf '%s\n' "$2" > "$(_ssh_auto_resume_choice_path "$1")"
+  }
+
+  _ssh_auto_resume_menu() {
+    _ssh_auto_resume_menu_ip="$1"
+    _ssh_auto_resume_choice=""
+    _ssh_auto_resume_menu_input=""
+
+    printf '\n'
+    printf '  SSH multi-session resume - first connect from %s\n' "$_ssh_auto_resume_menu_ip"
+    printf '\n'
+    printf '    [1] single  one persistent session shared across reconnects\n'
+    printf '    [2] multi   fresh session per connect; concurrent slots OK\n'
+    printf '    [3] skip    plain shell; do not auto-attach this source\n'
+    printf '\n'
+    printf '  Choice is remembered. Change later via:\n'
+    printf '    ssh-multisession-resume policy set %s <mode>\n' "$_ssh_auto_resume_menu_ip"
+    printf '    ssh-multisession-resume policy forget %s\n' "$_ssh_auto_resume_menu_ip"
+    printf '\n'
+
+    _ssh_auto_resume_menu_attempts=0
+    while [ "$_ssh_auto_resume_menu_attempts" -lt 3 ]; do
+      printf 'Select 1/2/3 [default 2-multi]: '
+      if ! IFS= read -r _ssh_auto_resume_menu_input; then
+        printf '\n'
+        _ssh_auto_resume_choice="skip"
+        return 0
+      fi
+      case "$_ssh_auto_resume_menu_input" in
+        1|single|s|S) _ssh_auto_resume_choice="single"; return 0 ;;
+        ''|2|multi|m|M) _ssh_auto_resume_choice="multi"; return 0 ;;
+        3|skip|n|N|q|Q) _ssh_auto_resume_choice="skip"; return 0 ;;
+        *) printf '  (enter 1, 2, or 3)\n' ;;
+      esac
+      _ssh_auto_resume_menu_attempts=$((_ssh_auto_resume_menu_attempts + 1))
+    done
+
+    _ssh_auto_resume_choice="skip"
+    return 0
   }
 
   if [ "${SSH_AUTO_RESUME:-}" != "1" ] && [ "${SCREEN_KILL_ON_HANGUP:-}" != "1" ]; then
@@ -260,6 +336,24 @@ _ssh_auto_resume_main() {
   _ssh_auto_resume_lock_dir="${_ssh_auto_resume_runtime}/${_ssh_auto_resume_socket_name}.slot.lock"
   _ssh_auto_resume_reservation_dir="${_ssh_auto_resume_runtime}/${_ssh_auto_resume_socket_name}.reservations"
   _ssh_auto_resume_reservation=""
+
+  # Explicit override wins; else load saved choice; else prompt+save.
+  if [ -n "${SSH_AUTO_RESUME_MODE:-}" ]; then
+    case "$SSH_AUTO_RESUME_MODE" in
+      single|multi|skip) _ssh_auto_resume_mode="$SSH_AUTO_RESUME_MODE" ;;
+      *) _ssh_auto_resume_mode="multi" ;;
+    esac
+  elif _ssh_auto_resume_read_choice "$_ssh_auto_resume_source"; then
+    _ssh_auto_resume_mode="$_ssh_auto_resume_choice"
+  else
+    _ssh_auto_resume_menu "$_ssh_auto_resume_source"
+    _ssh_auto_resume_mode="$_ssh_auto_resume_choice"
+    _ssh_auto_resume_save_choice "$_ssh_auto_resume_source" "$_ssh_auto_resume_mode" || true
+  fi
+
+  if [ "$_ssh_auto_resume_mode" = "skip" ]; then
+    return 0
+  fi
 
   mkdir -p "$_ssh_auto_resume_reservation_dir" 2>/dev/null || return 0
 
@@ -304,5 +398,10 @@ if [ "${SSH_AUTO_RESUME_KEEP_FUNCTIONS:-0}" != "1" ]; then
     _ssh_auto_resume_screen_state \
     _ssh_auto_resume_select_screen \
     _ssh_auto_resume_run_tmux \
-    _ssh_auto_resume_run_screen 2>/dev/null || true
+    _ssh_auto_resume_run_screen \
+    _ssh_auto_resume_policy_dir \
+    _ssh_auto_resume_choice_path \
+    _ssh_auto_resume_read_choice \
+    _ssh_auto_resume_save_choice \
+    _ssh_auto_resume_menu 2>/dev/null || true
 fi

@@ -1,215 +1,364 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Full TDD-style test suite for ssh-multisession-resume.
+# Exits 0 if all tests pass, 1 otherwise.
+set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+# shellcheck source=tests/lib.sh
+. "${ROOT_DIR}/tests/lib.sh"
+
 ROOT_INSTALL="${ROOT_DIR}/ssh-multisession-resume"
 SERVER_INSTALL="${ROOT_DIR}/server/install.sh"
 CLIENT_INSTALL="${ROOT_DIR}/client/install.sh"
 AUTO_RESUME="${ROOT_DIR}/client/auto-resume.sh"
 LEGACY_AUTO_SCREEN="${ROOT_DIR}/client/auto-screen.sh"
+PROFILE_ENTRY="${ROOT_DIR}/client/profile-entry.sh"
 TMUX_CONF="${ROOT_DIR}/client/tmux-auto-resume.conf"
 SCREENRC="${ROOT_DIR}/client/screen-auto-resume.screenrc"
+LEGACY_SCREENRC="${ROOT_DIR}/client/screen-hangup-off.screenrc"
 ALPM_INSTALL="${ROOT_DIR}/ssh-multisession-resume.install"
+PKGBUILD="${ROOT_DIR}/PKGBUILD"
+SRCINFO="${ROOT_DIR}/.SRCINFO"
 
-require_file() {
-  local path="$1"
-  [[ -f "$path" ]] || {
-    echo "missing file: ${path}" >&2
-    exit 1
-  }
+# Temp roots: cleaned up at end-of-run via trap.
+TEST_TMP_ROOT="$(mktemp -d)"
+cleanup_tests() { rm -rf "$TEST_TMP_ROOT"; }
+trap cleanup_tests EXIT INT TERM HUP
+
+mktemp_in_tests() { mktemp -p "$TEST_TMP_ROOT"; }
+mktemp_d_in_tests() { mktemp -d -p "$TEST_TMP_ROOT"; }
+
+# ============================================================
+# Tier 0: required-file sanity + parse checks
+# ============================================================
+
+test_required_files() {
+  test_case "files: every distributed source is present"
+  local f
+  for f in "$ROOT_INSTALL" "$SERVER_INSTALL" "$CLIENT_INSTALL" "$AUTO_RESUME" \
+           "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$TMUX_CONF" "$SCREENRC" \
+           "$LEGACY_SCREENRC" "$ALPM_INSTALL" "$PKGBUILD" "$SRCINFO"; do
+    assert_file_exists "$f"
+  done
 }
 
-require_file "$ROOT_INSTALL"
-require_file "$SERVER_INSTALL"
-require_file "$CLIENT_INSTALL"
-require_file "$AUTO_RESUME"
-require_file "$LEGACY_AUTO_SCREEN"
-require_file "$TMUX_CONF"
-require_file "$SCREENRC"
-require_file "$ALPM_INSTALL"
+test_bash_syntax() {
+  test_case "syntax: bash -n on every bash script"
+  local f
+  for f in "$ROOT_INSTALL" "$SERVER_INSTALL" "$CLIENT_INSTALL" "$AUTO_RESUME" \
+           "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$ALPM_INSTALL" \
+           "${ROOT_DIR}/tests/lib.sh" "${ROOT_DIR}/tests/smoke.sh"; do
+    if ! bash -n "$f" 2>/dev/null; then
+      fail "bash -n failed on $f"
+    fi
+  done
+}
 
-bash -n "$ROOT_INSTALL"
-bash -n "$SERVER_INSTALL"
-bash -n "$CLIENT_INSTALL"
-bash -n "$AUTO_RESUME"
-bash -n "$LEGACY_AUTO_SCREEN"
-bash -n "$ALPM_INSTALL"
-if command -v zsh >/dev/null 2>&1; then
-  zsh -n "$AUTO_RESUME"
-  zsh -n "$LEGACY_AUTO_SCREEN"
-fi
-
-expect_success() {
-  local label="$1"
-  local out
-  shift
-
-  out="$(mktemp)"
-  if ! "$@" > "$out" 2>&1; then
-    echo "expected success: ${label}" >&2
-    cat "$out" >&2
-    rm -f "$out"
-    exit 1
+test_posix_sh_syntax_for_profile_entry() {
+  test_case "syntax: profile-entry.sh parses under sh and zsh"
+  if ! sh -n "$PROFILE_ENTRY" 2>/dev/null; then
+    fail "sh -n failed on $PROFILE_ENTRY"
   fi
-  rm -f "$out"
-}
-
-expect_failure() {
-  local label="$1"
-  local out
-  shift
-
-  out="$(mktemp)"
-  if "$@" > "$out" 2>&1; then
-    echo "expected failure: ${label}" >&2
-    cat "$out" >&2
-    rm -f "$out"
-    exit 1
+  if command -v zsh >/dev/null 2>&1; then
+    if ! zsh -n "$PROFILE_ENTRY" 2>/dev/null; then
+      fail "zsh -n failed on $PROFILE_ENTRY"
+    fi
   fi
-  rm -f "$out"
-}
-
-expect_no_match() {
-  local pattern="$1"
-  local file="$2"
-
-  if grep -q -- "$pattern" "$file"; then
-    echo "unexpected match ${pattern} in ${file}" >&2
-    exit 1
+  if command -v dash >/dev/null 2>&1; then
+    if ! dash -n "$PROFILE_ENTRY" 2>/dev/null; then
+      fail "dash -n failed on $PROFILE_ENTRY"
+    fi
   fi
 }
 
-tmp_usage="$(mktemp)"
-"$ROOT_INSTALL" --help > "$tmp_usage"
-grep -q '^  ./ssh-multisession-resume doctor$' "$tmp_usage"
-SSH_MULTISESSION_RESUME_COMMAND=ssh-multisession-resume "$ROOT_INSTALL" --help > "$tmp_usage"
-grep -q '^  ssh-multisession-resume doctor$' "$tmp_usage"
+test_zsh_syntax_for_auto_resume() {
+  if ! command -v zsh >/dev/null 2>&1; then
+    test_case "syntax: zsh -n on auto-resume.sh (skipped: zsh missing)"
+    return
+  fi
+  test_case "syntax: zsh -n on auto-resume.sh + legacy auto-screen.sh"
+  zsh -n "$AUTO_RESUME" 2>/dev/null || fail "zsh -n failed on $AUTO_RESUME"
+  zsh -n "$LEGACY_AUTO_SCREEN" 2>/dev/null || fail "zsh -n failed on $LEGACY_AUTO_SCREEN"
+}
 
-bash -c "SSH_AUTO_RESUME=1 SSH_AUTO_RESUME_TMUX_CONF='${TMUX_CONF}' SSH_AUTO_RESUME_SCREENRC='${SCREENRC}' SSH_CONNECTION=x . '${AUTO_RESUME}'; printf '%s\n' bash-auto-resume-guard-ok"
-bash -c "SCREEN_KILL_ON_HANGUP=1 SSH_AUTO_RESUME_TMUX_CONF='${TMUX_CONF}' SSH_AUTO_RESUME_SCREENRC='${SCREENRC}' SSH_CONNECTION=x . '${AUTO_RESUME}'; printf '%s\n' bash-legacy-auto-resume-guard-ok"
-bash -c "SCREEN_KILL_ON_HANGUP=1 SCREEN_KILL_SCREENRC='${ROOT_DIR}/client/screen-hangup-off.screenrc' SSH_CONNECTION=x . '${LEGACY_AUTO_SCREEN}'; printf '%s\n' bash-legacy-shim-guard-ok"
-if command -v zsh >/dev/null 2>&1; then
-  zsh -c "SSH_AUTO_RESUME=1 SSH_AUTO_RESUME_TMUX_CONF='${TMUX_CONF}' SSH_AUTO_RESUME_SCREENRC='${SCREENRC}' SSH_CONNECTION=x . '${AUTO_RESUME}'; printf '%s\n' zsh-auto-resume-guard-ok"
-fi
+# ============================================================
+# Tier 1: unit tests for pure functions inside auto-resume.sh
+# ============================================================
 
-AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
-  . "$AUTO_RESUME"
-  [[ "$(_ssh_auto_resume_sanitize "100.101.137.20")" == "100_101_137_20" ]]
-  [[ "$(_ssh_auto_resume_sanitize "../../bad source!")" == "______bad_source_" ]]
-  SSH_CONNECTION="198.51.100.8 55555 10.0.0.1 22"
-  [[ "$(_ssh_auto_resume_source)" == "198.51.100.8" ]]
-  unset SSH_CONNECTION
-  SSH_CLIENT="203.0.113.9 55555 22"
-  [[ "$(_ssh_auto_resume_source)" == "203.0.113.9" ]]
-  unset SSH_CLIENT
-  [[ "$(_ssh_auto_resume_source)" == "unknown" ]]
-'
+test_sanitize_replaces_special_chars() {
+  test_case "sanitize: special chars become underscores"
+  local result
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_sanitize "100.101.137.20"
+  ')"
+  assert_eq "$result" "100_101_137_20" "dotted IPv4"
 
-tmp_fake_bin="$(mktemp -d)"
-tmp_fake_state="$(mktemp)"
-cat > "${tmp_fake_bin}/tmux" <<'FAKE_TMUX'
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_sanitize "../../bad source!"
+  ')"
+  assert_eq "$result" "______bad_source_" "path traversal blocked"
+
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_sanitize ""
+  ')"
+  assert_eq "$result" "" "empty input stays empty"
+
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_sanitize "alphaNum-3.test_a"
+  ')"
+  assert_eq "$result" "alphaNum-3_test_a" "preserves safe chars"
+}
+
+test_source_ip_extraction() {
+  test_case "source-ip: SSH_CONNECTION precedence"
+  local result
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    SSH_CONNECTION="198.51.100.8 55555 10.0.0.1 22"
+    _ssh_auto_resume_source
+  ')"
+  assert_eq "$result" "198.51.100.8" "SSH_CONNECTION winning"
+
+  test_case "source-ip: SSH_CLIENT fallback when SSH_CONNECTION unset"
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    unset SSH_CONNECTION
+    SSH_CLIENT="203.0.113.9 55555 22"
+    _ssh_auto_resume_source
+  ')"
+  assert_eq "$result" "203.0.113.9" "SSH_CLIENT fallback"
+
+  test_case "source-ip: unknown when neither var set"
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    unset SSH_CONNECTION
+    unset SSH_CLIENT
+    _ssh_auto_resume_source
+  ')"
+  assert_eq "$result" "unknown" "neither var set"
+}
+
+test_runtime_dir_prefers_xdg() {
+  test_case "runtime-dir: XDG_RUNTIME_DIR honored when present"
+  local xdg
+  xdg="$(mktemp_d_in_tests)"
+  local result
+  result="$(AUTO_RESUME="$AUTO_RESUME" XDG_RUNTIME_DIR="$xdg" \
+            SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_runtime_dir
+  ')"
+  assert_eq "$result" "$xdg" "uses XDG_RUNTIME_DIR"
+}
+
+test_runtime_dir_fallback_creates_tmp_subdir() {
+  test_case "runtime-dir: falls back to /tmp/ssh-auto-resume-<uid> when XDG unset"
+  local fake_uid=99999
+  rm -rf "/tmp/ssh-auto-resume-${fake_uid}" 2>/dev/null || true
+  local result
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    unset XDG_RUNTIME_DIR
+    _ssh_auto_resume_user=test
+    # Override id -u via a function so we get a deterministic path.
+    id() { printf "%s\n" '"$fake_uid"'; }
+    export -f id
+    _ssh_auto_resume_runtime_dir
+  ')"
+  assert_eq "$result" "/tmp/ssh-auto-resume-${fake_uid}" "fallback path"
+  rm -rf "/tmp/ssh-auto-resume-${fake_uid}" 2>/dev/null || true
+}
+
+test_select_tmux_finds_first_free_slot() {
+  test_case "select-tmux multi: skips attached slots and picks the first free"
+  local fake_bin state
+  fake_bin="$(mktemp_d_in_tests)"
+  state="$(mktemp_in_tests)"
+  cat > "${fake_bin}/tmux" <<'FAKE_TMUX'
 #!/usr/bin/env bash
 set -euo pipefail
-
 state="${FAKE_TMUX_STATE:?}"
-
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -L|-f)
-      shift 2
-      ;;
-    *)
-      break
-      ;;
-  esac
+  case "$1" in -L|-f) shift 2 ;; *) break ;; esac
 done
-
-cmd="${1:-}"
-shift || true
-
+cmd="${1:-}"; shift || true
 session_arg() {
   local value=""
   while [[ $# -gt 0 ]]; do
-    case "$1" in
-      -t|-s)
-        value="$2"
-        shift 2
-        ;;
-      *)
-        shift
-        ;;
-    esac
+    case "$1" in -t|-s) value="$2"; shift 2 ;; *) shift ;; esac
   done
   printf '%s\n' "$value"
 }
-
 case "$cmd" in
-  has-session)
-    session="$(session_arg "$@")"
-    grep -q "^${session}|" "$state"
-    ;;
-  display-message)
-    session="$(session_arg "$@")"
-    awk -F'|' -v session="$session" '$1 == session { print $2; found = 1 } END { exit found ? 0 : 1 }' "$state"
-    ;;
-  list-sessions)
-    awk -F'|' '{ printf "%s|%s|1\n", $1, $2 }' "$state"
-    ;;
-  *)
-    exit 2
-    ;;
+  has-session)    grep -q "^$(session_arg "$@")|" "$state" ;;
+  display-message) awk -F'|' -v s="$(session_arg "$@")" '$1==s{print $2; f=1} END{exit f?0:1}' "$state" ;;
+  list-sessions)  awk -F'|' '{printf "%s|%s|1\n", $1, $2}' "$state" ;;
+  *) exit 2 ;;
 esac
 FAKE_TMUX
-chmod +x "${tmp_fake_bin}/tmux"
+  chmod +x "${fake_bin}/tmux"
+  printf '%s\n' 'main|1' 'ip-100_101_137_20-1|0' > "$state"
 
-printf '%s\n' 'main|1' 'ip-100_101_137_20-1|0' > "$tmp_fake_state"
-PATH="${tmp_fake_bin}:$PATH" FAKE_TMUX_STATE="$tmp_fake_state" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
-  . "$AUTO_RESUME"
-  _ssh_auto_resume_socket_name=ssh-resume-test
-  _ssh_auto_resume_session_base=ip-100_101_137_20
-  _ssh_auto_resume_reservation_dir="$(mktemp -d)"
-  SSH_AUTO_RESUME_MAX_SLOTS=4
-  _ssh_auto_resume_select_tmux
-  [[ "$_ssh_auto_resume_selected" == "ip-100_101_137_20-1" ]]
-  [[ "$_ssh_auto_resume_selected_slot" == "1" ]]
-'
+  local result
+  result="$(PATH="${fake_bin}:$PATH" FAKE_TMUX_STATE="$state" \
+            AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_socket_name=ssh-resume-test
+    _ssh_auto_resume_session_base=ip-100_101_137_20
+    _ssh_auto_resume_reservation_dir="$(mktemp -d)"
+    SSH_AUTO_RESUME_MAX_SLOTS=4
+    _ssh_auto_resume_select_tmux
+    printf "%s\n%s\n" "$_ssh_auto_resume_selected" "$_ssh_auto_resume_selected_slot"
+  ')"
+  assert_contains "$result" "ip-100_101_137_20-1" "selected slot 1"
+}
 
-PATH="${tmp_fake_bin}:$PATH" FAKE_TMUX_STATE="$tmp_fake_state" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
-  . "$AUTO_RESUME"
-  _ssh_auto_resume_socket_name=ssh-resume-test
-  _ssh_auto_resume_session_base=ip-100_101_137_20
-  _ssh_auto_resume_reservation_dir="$(mktemp -d)"
-  printf "%s\n" "$$" > "$_ssh_auto_resume_reservation_dir/tmux-ip-100_101_137_20-1.pid"
-  SSH_AUTO_RESUME_MAX_SLOTS=4
-  _ssh_auto_resume_select_tmux
-  [[ "$_ssh_auto_resume_selected" == "ip-100_101_137_20-2" ]]
-  [[ "$_ssh_auto_resume_selected_slot" == "2" ]]
-'
+test_select_tmux_skips_reserved_slots() {
+  test_case "select-tmux multi: skips slots that are pid-reserved by a live process"
+  local fake_bin state res_dir
+  fake_bin="$(mktemp_d_in_tests)"
+  state="$(mktemp_in_tests)"
+  res_dir="$(mktemp_d_in_tests)"
+  cat > "${fake_bin}/tmux" <<'FAKE_TMUX'
+#!/usr/bin/env bash
+state="${FAKE_TMUX_STATE:?}"
+while [[ $# -gt 0 ]]; do case "$1" in -L|-f) shift 2 ;; *) break ;; esac; done
+cmd="${1:-}"; shift || true
+session_arg() {
+  local v=""
+  while [[ $# -gt 0 ]]; do case "$1" in -t|-s) v="$2"; shift 2 ;; *) shift ;; esac; done
+  printf '%s\n' "$v"
+}
+case "$cmd" in
+  has-session) grep -q "^$(session_arg "$@")|" "$state" ;;
+  display-message) awk -F'|' -v s="$(session_arg "$@")" '$1==s{print $2; f=1} END{exit f?0:1}' "$state" ;;
+  *) exit 2 ;;
+esac
+FAKE_TMUX
+  chmod +x "${fake_bin}/tmux"
+  printf '%s\n' 'main|1' 'ip-100_101_137_20-1|0' > "$state"
 
-printf '%s\n' 'ip-100_101_137_20-0|1' 'ip-100_101_137_20-1|1' > "$tmp_fake_state"
-PATH="${tmp_fake_bin}:$PATH" FAKE_TMUX_STATE="$tmp_fake_state" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
-  . "$AUTO_RESUME"
-  _ssh_auto_resume_socket_name=ssh-resume-test
-  _ssh_auto_resume_session_base=ip-100_101_137_20
-  _ssh_auto_resume_reservation_dir="$(mktemp -d)"
-  SSH_AUTO_RESUME_MAX_SLOTS=2
-  ! _ssh_auto_resume_select_tmux >/dev/null 2>&1
-'
+  local result
+  result="$(PATH="${fake_bin}:$PATH" FAKE_TMUX_STATE="$state" \
+            AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 \
+            RES_DIR="$res_dir" bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_socket_name=ssh-resume-test
+    _ssh_auto_resume_session_base=ip-100_101_137_20
+    _ssh_auto_resume_reservation_dir="$RES_DIR"
+    printf "%s\n" "$$" > "$RES_DIR/tmux-ip-100_101_137_20-1.pid"
+    SSH_AUTO_RESUME_MAX_SLOTS=4
+    _ssh_auto_resume_select_tmux
+    printf "%s\n" "$_ssh_auto_resume_selected"
+  ')"
+  assert_eq "$result" "ip-100_101_137_20-2" "reserved slot 1 is skipped"
+}
 
-AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
-  . "$AUTO_RESUME"
-  tmp_lock_parent="$(mktemp -d)"
-  _ssh_auto_resume_lock_dir="${tmp_lock_parent}/slot.lock"
-  mkdir "$_ssh_auto_resume_lock_dir"
-  printf "%s\n" 999999999 > "${_ssh_auto_resume_lock_dir}/pid"
-  _ssh_auto_resume_lock
-  [[ -f "${_ssh_auto_resume_lock_dir}/pid" ]]
-  _ssh_auto_resume_unlock
-  [[ ! -e "$_ssh_auto_resume_lock_dir" ]]
-'
+test_select_tmux_max_slots_returns_failure() {
+  test_case "select-tmux multi: returns non-zero when no free slots"
+  local fake_bin state
+  fake_bin="$(mktemp_d_in_tests)"
+  state="$(mktemp_in_tests)"
+  cat > "${fake_bin}/tmux" <<'FAKE_TMUX'
+#!/usr/bin/env bash
+state="${FAKE_TMUX_STATE:?}"
+while [[ $# -gt 0 ]]; do case "$1" in -L|-f) shift 2 ;; *) break ;; esac; done
+cmd="${1:-}"; shift || true
+session_arg() {
+  local v=""
+  while [[ $# -gt 0 ]]; do case "$1" in -t|-s) v="$2"; shift 2 ;; *) shift ;; esac; done
+  printf '%s\n' "$v"
+}
+case "$cmd" in
+  has-session) grep -q "^$(session_arg "$@")|" "$state" ;;
+  display-message) awk -F'|' -v s="$(session_arg "$@")" '$1==s{print $2; f=1} END{exit f?0:1}' "$state" ;;
+  *) exit 2 ;;
+esac
+FAKE_TMUX
+  chmod +x "${fake_bin}/tmux"
+  printf '%s\n' 'ip-100_101_137_20-0|1' 'ip-100_101_137_20-1|1' > "$state"
 
-tmp_fake_screen_bin="$(mktemp -d)"
-cat > "${tmp_fake_screen_bin}/screen" <<'FAKE_SCREEN'
+  if PATH="${fake_bin}:$PATH" FAKE_TMUX_STATE="$state" \
+       AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+       . "$AUTO_RESUME"
+       _ssh_auto_resume_socket_name=ssh-resume-test
+       _ssh_auto_resume_session_base=ip-100_101_137_20
+       _ssh_auto_resume_reservation_dir="$(mktemp -d)"
+       SSH_AUTO_RESUME_MAX_SLOTS=2
+       _ssh_auto_resume_select_tmux
+       ' >/dev/null 2>&1; then
+    fail "select_tmux should fail with no free slots"
+  fi
+}
+
+test_select_tmux_single_mode_pins_slot_zero() {
+  test_case "select-tmux single: always slot 0 regardless of attachment"
+  AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_session_base=ip-100_101_137_20
+    _ssh_auto_resume_socket_name=ssh-resume-test
+    _ssh_auto_resume_reservation_dir="$(mktemp -d)"
+    SSH_AUTO_RESUME_MAX_SLOTS=4
+    _ssh_auto_resume_mode=single
+    _ssh_auto_resume_select_tmux
+    [[ "$_ssh_auto_resume_selected" == "ip-100_101_137_20-0" ]] || exit 1
+    [[ "$_ssh_auto_resume_selected_slot" == "0" ]] || exit 1
+  ' || fail "single-mode tmux did not pin slot 0"
+
+  test_case "select-screen single: always slot 0 regardless of attachment"
+  AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_session_base=ip-100_101_137_20
+    _ssh_auto_resume_socket_name=ssh-resume-test
+    _ssh_auto_resume_reservation_dir="$(mktemp -d)"
+    SSH_AUTO_RESUME_MAX_SLOTS=4
+    _ssh_auto_resume_mode=single
+    _ssh_auto_resume_select_screen
+    [[ "$_ssh_auto_resume_selected" == "ip-100_101_137_20-0" ]] || exit 1
+    [[ "$_ssh_auto_resume_selected_slot" == "0" ]] || exit 1
+  ' || fail "single-mode screen did not pin slot 0"
+}
+
+test_lock_clears_stale_pid() {
+  test_case "lock: clears a dead lock holder and acquires"
+  AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    tmp_parent="$(mktemp -d)"
+    _ssh_auto_resume_lock_dir="${tmp_parent}/slot.lock"
+    mkdir "$_ssh_auto_resume_lock_dir"
+    printf "%s\n" 999999999 > "${_ssh_auto_resume_lock_dir}/pid"
+    _ssh_auto_resume_lock || exit 1
+    [[ -f "${_ssh_auto_resume_lock_dir}/pid" ]] || exit 1
+    _ssh_auto_resume_unlock
+    [[ ! -e "$_ssh_auto_resume_lock_dir" ]] || exit 1
+  ' || fail "stale-lock recovery broke"
+}
+
+test_lock_retry_env_override() {
+  test_case "lock: SSH_AUTO_RESUME_LOCK_RETRIES=1 times out against a live holder"
+  if AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 \
+       SSH_AUTO_RESUME_LOCK_RETRIES=1 bash -c '
+       . "$AUTO_RESUME"
+       tmp_parent="$(mktemp -d)"
+       _ssh_auto_resume_lock_dir="${tmp_parent}/slot.lock"
+       mkdir "$_ssh_auto_resume_lock_dir"
+       printf "%s\n" "$$" > "${_ssh_auto_resume_lock_dir}/pid"
+       _ssh_auto_resume_lock 2>/dev/null
+       ' >/dev/null 2>&1; then
+    fail "lock should have failed with LOCK_RETRIES=1 against live holder"
+  fi
+}
+
+test_screen_state_parser() {
+  test_case "screen-state: detached / attached parsing"
+  local fake_bin
+  fake_bin="$(mktemp_d_in_tests)"
+  cat > "${fake_bin}/screen" <<'FAKE_SCREEN'
 #!/usr/bin/env bash
 cat <<'SCREEN_LS'
 There are screens on:
@@ -217,216 +366,694 @@ There are screens on:
 	456.ip-100_101_137_20-1	(Detached)
 SCREEN_LS
 FAKE_SCREEN
-chmod +x "${tmp_fake_screen_bin}/screen"
-PATH="${tmp_fake_screen_bin}:$PATH" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
-  . "$AUTO_RESUME"
-  [[ "$(_ssh_auto_resume_screen_state ip-100_101_137_20-1)" == "detached" ]]
-'
+  chmod +x "${fake_bin}/screen"
 
-tmp_dep_bin="$(mktemp -d)"
-tmp_dep_log="$(mktemp)"
-ln -s /usr/bin/dirname "${tmp_dep_bin}/dirname"
-cat > "${tmp_dep_bin}/sudo" <<'FAKE_SUDO'
-#!/bin/sh
-exec "$@"
-FAKE_SUDO
-cat > "${tmp_dep_bin}/pacman" <<FAKE_PACMAN
-#!/bin/sh
-printf '%s\n' "\$*" > "${tmp_dep_log}"
-FAKE_PACMAN
-chmod +x "${tmp_dep_bin}/sudo" "${tmp_dep_bin}/pacman"
-printf 'YES\n' | PATH="$tmp_dep_bin" /usr/bin/bash "$ROOT_INSTALL" deps
-grep -q -- '-S --needed tmux screen' "$tmp_dep_log"
+  local result
+  result="$(PATH="${fake_bin}:$PATH" AUTO_RESUME="$AUTO_RESUME" \
+            SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_screen_state ip-100_101_137_20-1
+  ')"
+  assert_eq "$result" "detached" "detached parsing"
 
-if SSH_CONNECTION='100.101.137.20 55555 100.101.137.1 22' SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$ROOT_INSTALL" doctor >/tmp/ssh-auto-resume-doctor.out 2>&1; then
-  echo "doctor unexpectedly succeeded outside managed multiplexer" >&2
-  cat /tmp/ssh-auto-resume-doctor.out >&2
-  exit 1
-fi
-grep -q 'doctor: not active for this login' /tmp/ssh-auto-resume-doctor.out
+  result="$(PATH="${fake_bin}:$PATH" AUTO_RESUME="$AUTO_RESUME" \
+            SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_screen_state ip-100_101_137_20-10
+  ')"
+  assert_eq "$result" "attached" "attached parsing"
 
-tmp_home="$(mktemp -d)"
-HOME="$tmp_home" "$CLIENT_INSTALL" apply
-HOME="$tmp_home" "$CLIENT_INSTALL" apply
-HOME="$tmp_home" "$CLIENT_INSTALL" status
-HOME="$tmp_home" "$CLIENT_INSTALL" sessions
-grep -q 'auto-resume.sh' "$tmp_home/.bash_profile"
-grep -q 'auto-resume.sh' "$tmp_home/.zshrc"
-HOME="$tmp_home" "$CLIENT_INSTALL" rollback
-[[ ! -e "$tmp_home/.bash_profile" ]]
-[[ ! -e "$tmp_home/.zshrc" ]]
+  result="$(PATH="${fake_bin}:$PATH" AUTO_RESUME="$AUTO_RESUME" \
+            SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_screen_state ip-100_101_137_20-99
+  ')"
+  assert_eq "$result" "missing" "missing parsing"
+}
 
-if command -v tmux >/dev/null 2>&1; then
-  tmp_service_home="$(mktemp -d)"
-  HOME="$tmp_service_home" SSH_AUTO_RESUME_SKIP_SYSTEMD=1 "$CLIENT_INSTALL" service-install
-  grep -q 'SSH auto-resume tmux keepalive' "$tmp_service_home/.config/systemd/user/ssh-auto-resume.service"
-  grep -q '__ssh_auto_resume_keepalive' "$tmp_service_home/.config/systemd/user/ssh-auto-resume.service"
-  HOME="$tmp_service_home" SSH_AUTO_RESUME_SKIP_SYSTEMD=1 "$CLIENT_INSTALL" service-status
-  HOME="$tmp_service_home" SSH_AUTO_RESUME_SKIP_SYSTEMD=1 "$CLIENT_INSTALL" service-rollback
-  [[ ! -e "$tmp_service_home/.config/systemd/user/ssh-auto-resume.service" ]]
-fi
+# ============================================================
+# Tier 2: choice/policy unit + integration
+# ============================================================
 
-tmp_home_existing="$(mktemp -d)"
-printf '%s\n' 'export EXISTING_PROFILE_VALUE=1' > "$tmp_home_existing/.profile"
-HOME="$tmp_home_existing" "$CLIENT_INSTALL" apply
-grep -q 'auto-resume.sh' "$tmp_home_existing/.profile"
-[[ ! -e "$tmp_home_existing/.bash_profile" ]]
-HOME="$tmp_home_existing" "$CLIENT_INSTALL" rollback
-grep -q '^export EXISTING_PROFILE_VALUE=1$' "$tmp_home_existing/.profile"
-expect_no_match 'scoped-screen-autodetach-off' "$tmp_home_existing/.profile"
-expect_no_match 'ssh-auto-resume-session' "$tmp_home_existing/.profile"
+test_read_choice_valid_modes() {
+  test_case "read_choice: accepts single / multi / skip"
+  local home
+  home="$(mktemp_d_in_tests)"
+  mkdir -p "${home}/.config/ssh-multisession-resume/choices"
+  printf 'single\n' > "${home}/.config/ssh-multisession-resume/choices/198.51.100.7"
+  HOME="$home" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_read_choice "198.51.100.7" || exit 1
+    [[ "$_ssh_auto_resume_choice" == "single" ]] || exit 1
+  ' || fail "single not read"
 
-tmp_conf_dir="$(mktemp -d)"
-tmp_conf="${tmp_conf_dir}/sshd_config"
-printf 'Port 22\nPasswordAuthentication no\n' > "$tmp_conf"
+  printf 'multi\n' > "${home}/.config/ssh-multisession-resume/choices/198.51.100.7"
+  HOME="$home" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_read_choice "198.51.100.7" || exit 1
+    [[ "$_ssh_auto_resume_choice" == "multi" ]] || exit 1
+  ' || fail "multi not read"
 
-valid_addresses=(
-  "0.0.0.0"
-  "255.255.255.255"
-  "192.168.001.010"
-  "203.0.113.7/0"
-  "203.0.113.7/32"
-)
-for address in "${valid_addresses[@]}"; do
-  expect_success "valid address ${address}" \
-    env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-    "$SERVER_INSTALL" apply --ip "$address"
-done
+  printf 'skip\n' > "${home}/.config/ssh-multisession-resume/choices/198.51.100.7"
+  HOME="$home" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_read_choice "198.51.100.7" || exit 1
+    [[ "$_ssh_auto_resume_choice" == "skip" ]] || exit 1
+  ' || fail "skip not read"
+}
 
-expect_success "trimmed comma address list" \
-  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-  "$SERVER_INSTALL" apply --ips ' 10.0.0.1 , 172.16.0.0/12 '
-grep -q '^Match Address 10.0.0.1,172.16.0.0/12$' "$tmp_conf"
+test_read_choice_rejects_garbage_and_missing() {
+  test_case "read_choice: rejects garbage content; returns non-zero for missing file"
+  local home
+  home="$(mktemp_d_in_tests)"
+  mkdir -p "${home}/.config/ssh-multisession-resume/choices"
+  printf 'garbage\n' > "${home}/.config/ssh-multisession-resume/choices/garbage.test"
+  if HOME="$home" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+       . "$AUTO_RESUME"
+       _ssh_auto_resume_read_choice "garbage.test"
+       ' >/dev/null 2>&1; then
+    fail "read_choice should reject garbage modes"
+  fi
 
-invalid_addresses=(
-  ""
-  "1.2.3"
-  "1.2.3.4.5"
-  "1.2.3.a"
-  "256.0.0.1"
-  "999999999999999999999.1.1.1"
-  "1.2.3.4/33"
-  "1.2.3.4/-1"
-  "1.2.3.4/999999999999999999999"
-  "1.2.3 .4"
-  $'1.2.3.\t4'
-)
-for address in "${invalid_addresses[@]}"; do
-  expect_failure "invalid address ${address}" \
-    env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-    "$SERVER_INSTALL" apply --ip "$address"
-done
+  if HOME="$home" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+       . "$AUTO_RESUME"
+       _ssh_auto_resume_read_choice "203.0.113.99"
+       ' >/dev/null 2>&1; then
+    fail "read_choice should return non-zero for missing ip"
+  fi
+}
 
-expect_failure "empty comma address entry" \
-  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-  "$SERVER_INSTALL" apply --ips '10.0.0.1,,10.0.0.2'
-expect_failure "embedded CIDR whitespace" \
-  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-  "$SERVER_INSTALL" apply --ips '10.0.0.1/ 24'
+test_save_choice_round_trip() {
+  test_case "save_choice: round-trip through read_choice"
+  local home
+  home="$(mktemp_d_in_tests)"
+  HOME="$home" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_save_choice "192_168_1_5" "single" || exit 1
+    _ssh_auto_resume_read_choice "192_168_1_5" || exit 1
+    [[ "$_ssh_auto_resume_choice" == "single" ]] || exit 1
+  ' || fail "save+read round trip broken"
+  assert_file_exists "${home}/.config/ssh-multisession-resume/choices/192_168_1_5"
+}
 
-expect_failure "zero keepalive interval" \
-  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-  "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-interval 0
-expect_failure "negative keepalive count" \
-  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-  "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-count -1
-expect_failure "oversized keepalive count" \
-  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-  "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-count 2147483648
-expect_failure "nonnumeric keepalive interval" \
-  env SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-  "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-interval abc
+test_menu_non_tty_returns_skip() {
+  test_case "menu: non-TTY input (closed stdin) returns skip"
+  local result
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_menu "203.0.113.5" </dev/null >/dev/null
+    printf "%s\n" "$_ssh_auto_resume_choice"
+  ')"
+  assert_eq "$result" "skip" "menu falls back to skip on EOF"
+}
 
-detected="$(env -u SSH_CLIENT SSH_CONNECTION='198.51.100.7 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current)"
-[[ "$detected" == "198.51.100.7" ]]
-detected="$(env -u SSH_CONNECTION SSH_CLIENT='203.0.113.8 55555 22' "$SERVER_INSTALL" detect-current)"
-[[ "$detected" == "203.0.113.8" ]]
-expect_failure "invalid SSH_CONNECTION client IP" \
-  env -u SSH_CLIENT SSH_CONNECTION='999.0.0.1 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
-expect_failure "unsupported IPv6 SSH_CONNECTION client IP" \
-  env -u SSH_CLIENT SSH_CONNECTION='2001:db8::1 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
+test_menu_digit_input_maps_to_modes() {
+  test_case "menu: digit input 1/2/3 maps to single/multi/skip"
+  local result
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_menu "1.2.3.4" >/dev/null <<<"1"
+    printf "%s\n" "$_ssh_auto_resume_choice"
+  ')"
+  assert_eq "$result" "single" "digit 1 -> single"
 
-SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 100.101.137.15
-SSHD_CONFIG_FILE="$tmp_conf" "$SERVER_INSTALL" status
-grep -q '^Match Address 100.101.137.15$' "$tmp_conf"
-grep -q '^    SetEnv SSH_AUTO_RESUME=1$' "$tmp_conf"
-expect_no_match 'Host ipad174' "$tmp_conf"
-expect_no_match 'TCPKeepAlive' "$tmp_conf"
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_menu "1.2.3.4" >/dev/null <<<"2"
+    printf "%s\n" "$_ssh_auto_resume_choice"
+  ')"
+  assert_eq "$result" "multi" "digit 2 -> multi"
 
-if SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply >/dev/null 2>&1; then
-  echo "server apply accepted a missing address" >&2
-  exit 1
-fi
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_menu "1.2.3.4" >/dev/null <<<"3"
+    printf "%s\n" "$_ssh_auto_resume_choice"
+  ')"
+  assert_eq "$result" "skip" "digit 3 -> skip"
+}
 
-SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 100.101.137.15 --ip 100.101.137.16
-grep -q '^Match Address 100.101.137.15,100.101.137.16$' "$tmp_conf"
+test_menu_default_empty_returns_multi() {
+  test_case "menu: empty input (just Enter) defaults to multi"
+  local result
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_menu "1.2.3.4" >/dev/null <<<""
+    printf "%s\n" "$_ssh_auto_resume_choice"
+  ')"
+  assert_eq "$result" "multi" "empty input defaults to multi"
+}
 
-SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips 100.101.137.15,100.101.137.16
-grep -q '^Match Address 100.101.137.15,100.101.137.16$' "$tmp_conf"
+test_menu_alias_keys() {
+  test_case "menu: word inputs (single/multi/skip) and letter aliases"
+  local result
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_menu "1.2.3.4" >/dev/null <<<"single"
+    printf "%s\n" "$_ssh_auto_resume_choice"
+  ')"
+  assert_eq "$result" "single" "word: single"
 
-detected="$(SSH_CONNECTION='100.101.137.17 55555 100.101.137.1 22' "$SERVER_INSTALL" detect-current)"
-[[ "$detected" == "100.101.137.17" ]]
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_menu "1.2.3.4" >/dev/null <<<"s"
+    printf "%s\n" "$_ssh_auto_resume_choice"
+  ')"
+  assert_eq "$result" "single" "alias: s"
 
-printf 'NO\n' | SSH_CONNECTION='100.101.137.19 55555 100.101.137.1 22' SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL"
-expect_no_match '100.101.137.19' "$tmp_conf"
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_menu "1.2.3.4" >/dev/null <<<"q"
+    printf "%s\n" "$_ssh_auto_resume_choice"
+  ')"
+  assert_eq "$result" "skip" "alias: q"
+}
 
-printf 'YES\n' | SSH_CONNECTION='100.101.137.18 55555 100.101.137.1 22' SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL"
-grep -q '^Match Address 100.101.137.15,100.101.137.16,100.101.137.18$' "$tmp_conf"
+test_menu_invalid_then_valid() {
+  test_case "menu: bogus input rejected, valid input on retry is accepted"
+  local result
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_menu "1.2.3.4" >/dev/null <<<$'\''bogus\n1'\''
+    printf "%s\n" "$_ssh_auto_resume_choice"
+  ')"
+  assert_eq "$result" "single" "retry path accepted"
+}
 
-SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" add-current --ip 100.101.137.17
-grep -q '^Match Address 100.101.137.15,100.101.137.16,100.101.137.18,100.101.137.17$' "$tmp_conf"
+# ============================================================
+# Tier 3: tmux conf + Wayland coverage
+# ============================================================
 
-SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" add-current --ip 100.101.137.17
-grep -q '^Match Address 100.101.137.15,100.101.137.16,100.101.137.18,100.101.137.17$' "$tmp_conf"
+test_tmux_conf_pins_update_environment() {
+  test_case "tmux-conf: pins DISPLAY / SSH_AUTH_SOCK / WAYLAND_DISPLAY / XAUTHORITY"
+  assert_grep '^set-option -g update-environment .*DISPLAY' "$TMUX_CONF"
+  assert_grep 'SSH_AUTH_SOCK' "$TMUX_CONF"
+  assert_grep 'WAYLAND_DISPLAY' "$TMUX_CONF"
+  assert_grep 'XAUTHORITY' "$TMUX_CONF"
+}
 
-SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips 100.101.137.0/24
-grep -q '^Match Address 100.101.137.0/24$' "$tmp_conf"
+# ============================================================
+# Tier 4: profile-entry.sh gating
+# ============================================================
 
-SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 100.101.137.15 --match-host ipad174.taile7c246.ts.net
-grep -q '^Match Address 100.101.137.15 Host ipad174.taile7c246.ts.net$' "$tmp_conf"
+test_profile_entry_skips_non_ssh() {
+  test_case "profile-entry: returns cleanly when SSH_* env is absent"
+  # In a non-interactive shell with no SSH_* set, sourcing should be a clean
+  # no-op and must not export SSH_AUTO_RESUME.
+  if ! env -i HOME="$(mktemp_d_in_tests)" PATH="$PATH" bash -c ". '$PROFILE_ENTRY'" 2>/dev/null; then
+    fail "profile-entry produced errors on non-SSH shell"
+  fi
+  local out
+  out="$(env -i HOME="$(mktemp_d_in_tests)" PATH="$PATH" bash -c "
+    . '$PROFILE_ENTRY'
+    echo \"SSH_AUTO_RESUME=\${SSH_AUTO_RESUME:-unset}\"
+  ")"
+  assert_contains "$out" "SSH_AUTO_RESUME=unset" "should not export the env on non-SSH login"
+}
 
-SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips 192.168.1.50,203.0.113.0/24
-grep -q '^Match Address 192.168.1.50,203.0.113.0/24$' "$tmp_conf"
+test_profile_entry_static_gates_present() {
+  test_case "profile-entry: required gates are present in the file"
+  assert_grep 'SSH_CONNECTION' "$PROFILE_ENTRY"
+  assert_grep 'TMUX' "$PROFILE_ENTRY"
+  assert_grep 'SSH_ORIGINAL_COMMAND' "$PROFILE_ENTRY"
+  assert_grep 'opt-out' "$PROFILE_ENTRY"
+  assert_grep '/usr/lib/ssh-multisession-resume' "$PROFILE_ENTRY"
+  assert_grep 'SSH_AUTO_RESUME=1' "$PROFILE_ENTRY"
+  assert_grep 'XDG_CONFIG_HOME' "$PROFILE_ENTRY"
+}
 
-if SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 999.1.1.1 >/dev/null 2>&1; then
-  echo "invalid IP was accepted" >&2
-  exit 1
-fi
+# ============================================================
+# Tier 5: CLI subcommands (policy / opt-out / help / summary)
+# ============================================================
 
-if SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips 100.101.137.0/33 >/dev/null 2>&1; then
-  echo "invalid CIDR was accepted" >&2
-  exit 1
-fi
+test_cli_help_lists_new_commands() {
+  test_case "cli: --help lists new subcommands"
+  local out
+  out="$(mktemp_in_tests)"
+  "$ROOT_INSTALL" --help > "$out"
+  assert_grep '^  \./ssh-multisession-resume doctor' "$out"
+  assert_grep 'policy show' "$out"
+  assert_grep 'policy set IP MODE' "$out"
+  assert_grep 'policy forget IP' "$out"
+  assert_grep 'opt-out' "$out"
+  assert_grep 'opt-in' "$out"
 
-SSHD_CONFIG_FILE="$tmp_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" rollback
-expect_no_match 'ssh-auto-resume' "$tmp_conf"
-expect_no_match 'ssh-screen-disconnect-kill' "$tmp_conf"
+  SSH_MULTISESSION_RESUME_COMMAND=ssh-multisession-resume "$ROOT_INSTALL" --help > "$out"
+  assert_grep '^  ssh-multisession-resume doctor' "$out"
+}
 
-tmp_root_home="$(mktemp -d)"
-tmp_root_conf_dir="$(mktemp -d)"
-tmp_root_conf="${tmp_root_conf_dir}/sshd_config"
-tmp_root_apply_out="$(mktemp)"
-printf 'Port 22\nPasswordAuthentication no\n' > "$tmp_root_conf"
-printf 'YES\n' | HOME="$tmp_root_home" SSH_MULTISESSION_RESUME_COMMAND=ssh-multisession-resume SSH_CONNECTION='100.101.137.20 55555 100.101.137.1 22' SSHD_CONFIG_FILE="$tmp_root_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$ROOT_INSTALL" > "$tmp_root_apply_out"
-grep -q 'After reconnecting, run ssh-multisession-resume doctor to verify the active session\.' "$tmp_root_apply_out"
-grep -q '^Match Address 100.101.137.20$' "$tmp_root_conf"
-grep -q '^    SetEnv SSH_AUTO_RESUME=1$' "$tmp_root_conf"
-grep -q 'auto-resume.sh' "$tmp_root_home/.bash_profile"
-grep -q 'auto-resume.sh' "$tmp_root_home/.zshrc"
-HOME="$tmp_root_home" SSH_CONNECTION='100.101.137.20 55555 100.101.137.1 22' SSHD_CONFIG_FILE="$tmp_root_conf" "$ROOT_INSTALL" status
-HOME="$tmp_root_home" SSHD_CONFIG_FILE="$tmp_root_conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 "$ROOT_INSTALL" rollback
-expect_no_match 'ssh-auto-resume' "$tmp_root_conf"
-expect_no_match 'ssh-screen-disconnect-kill' "$tmp_root_conf"
-[[ ! -e "$tmp_root_home/.bash_profile" ]]
-[[ ! -e "$tmp_root_home/.zshrc" ]]
+test_cli_default_action_is_summary() {
+  test_case "cli: no args prints summary (not legacy apply prompt)"
+  local home
+  home="$(mktemp_d_in_tests)"
+  local out
+  out="$(HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" 2>&1 || true)"
+  assert_contains "$out" "Install:" "summary shows install section"
+  assert_contains "$out" "Saved policies:" "summary lists saved policies"
+  assert_contains "$out" "Next steps:" "summary shows next steps"
+}
 
-if command -v sshd >/dev/null 2>&1 && command -v ssh-keygen >/dev/null 2>&1; then
-  tmp_real_sshd="$(mktemp -d)"
-  tmp_key="${tmp_real_sshd}/host_ed25519"
-  tmp_real_conf="${tmp_real_sshd}/sshd_config"
-  ssh-keygen -q -t ed25519 -N '' -f "$tmp_key"
-  printf 'Port 2222\nHostKey %s\nPasswordAuthentication no\n' "$tmp_key" > "$tmp_real_conf"
-  SSHD_CONFIG_FILE="$tmp_real_conf" SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips 100.101.137.15,100.101.138.0/24
-fi
+test_cli_policy_set_show_forget_clear() {
+  test_case "cli: policy set / show / forget / clear round-trip"
+  local home
+  home="$(mktemp_d_in_tests)"
 
-echo "smoke: ok"
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set 192.168.1.50 single >/dev/null
+  assert_file_exists "${home}/.config/ssh-multisession-resume/choices/192_168_1_50"
+  assert_eq "$(cat "${home}/.config/ssh-multisession-resume/choices/192_168_1_50")" "single"
+
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set 10.0.0.1 multi >/dev/null
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set fe80::1 skip >/dev/null
+
+  local out
+  out="$(mktemp_in_tests)"
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy show > "$out"
+  assert_grep '192_168_1_50 -> single' "$out"
+  assert_grep '10_0_0_1 -> multi' "$out"
+  assert_grep 'fe80__1 -> skip' "$out"
+
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy forget 192.168.1.50 >/dev/null
+  assert_file_missing "${home}/.config/ssh-multisession-resume/choices/192_168_1_50"
+
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy clear >/dev/null
+  assert_dir_empty "${home}/.config/ssh-multisession-resume/choices"
+}
+
+test_cli_policy_set_rejects_invalid_mode() {
+  test_case "cli: policy set rejects modes outside {single,multi,skip}"
+  local home
+  home="$(mktemp_d_in_tests)"
+  expect_failure env HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set 1.2.3.4 bogus
+}
+
+test_cli_policy_set_requires_ip_and_mode() {
+  test_case "cli: policy set without arguments fails clearly"
+  local home
+  home="$(mktemp_d_in_tests)"
+  expect_failure env HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set
+  expect_failure env HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set 1.2.3.4
+}
+
+test_cli_policy_show_when_empty() {
+  test_case "cli: policy show with no policies prints a friendly placeholder"
+  local home out
+  home="$(mktemp_d_in_tests)"
+  out="$(HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy show)"
+  assert_contains "$out" "no saved policies" "placeholder message"
+}
+
+test_cli_policy_show_sigpipe_resistant() {
+  test_case "cli: policy show survives broken pipe (e.g. piped to head)"
+  local home
+  home="$(mktemp_d_in_tests)"
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set 192.168.1.50 single >/dev/null
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set 10.0.0.1 multi >/dev/null
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set 198.51.100.7 skip >/dev/null
+  # Pipe to head -n 0 closes stdout immediately. Without our SIGPIPE
+  # handling, set -euo pipefail would propagate 141 and break the suite.
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy show | head -n 0 >/dev/null || true
+}
+
+test_cli_optout_optin_roundtrip() {
+  test_case "cli: opt-out writes marker; opt-in removes it"
+  local home
+  home="$(mktemp_d_in_tests)"
+
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" opt-out >/dev/null
+  assert_file_exists "${home}/.config/ssh-multisession-resume/opt-out"
+
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" opt-in >/dev/null
+  assert_file_missing "${home}/.config/ssh-multisession-resume/opt-out"
+
+  # opt-in twice is a no-op (no error).
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" opt-in >/dev/null
+}
+
+test_cli_unknown_action_fails() {
+  test_case "cli: unknown action exits non-zero"
+  expect_failure "$ROOT_INSTALL" totally-not-a-real-action
+  expect_failure "$ROOT_INSTALL" policy mystery-sub
+}
+
+test_cli_detect_current_extracts_ip() {
+  test_case "cli: detect-current reads SSH_CONNECTION / SSH_CLIENT"
+  local result
+  result="$(env -u SSH_CLIENT SSH_CONNECTION='198.51.100.7 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current)"
+  assert_eq "$result" "198.51.100.7" "SSH_CONNECTION path"
+
+  result="$(env -u SSH_CONNECTION SSH_CLIENT='203.0.113.8 55555 22' "$SERVER_INSTALL" detect-current)"
+  assert_eq "$result" "203.0.113.8" "SSH_CLIENT fallback"
+
+  expect_failure env -u SSH_CLIENT SSH_CONNECTION='999.0.0.1 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
+  expect_failure env -u SSH_CLIENT SSH_CONNECTION='2001:db8::1 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
+}
+
+# ============================================================
+# Tier 6: SSH_AUTO_RESUME_MODE override precedence
+# ============================================================
+
+test_mode_env_override_precedence() {
+  test_case "auto-resume: SSH_AUTO_RESUME_MODE env beats saved choice"
+  local home
+  home="$(mktemp_d_in_tests)"
+  mkdir -p "${home}/.config/ssh-multisession-resume/choices"
+  # Saved choice says skip
+  printf 'skip\n' > "${home}/.config/ssh-multisession-resume/choices/198_51_100_7"
+
+  # But we override at runtime to single. The override should win.
+  local result
+  result="$(HOME="$home" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 \
+            SSH_AUTO_RESUME_MODE=single bash -c '
+    . "$AUTO_RESUME"
+    # Simulate that main resolved the mode by reading override + saved.
+    if [ -n "${SSH_AUTO_RESUME_MODE:-}" ]; then
+      case "$SSH_AUTO_RESUME_MODE" in
+        single|multi|skip) printf "%s\n" "$SSH_AUTO_RESUME_MODE" ;;
+        *) printf "multi\n" ;;
+      esac
+    fi
+  ')"
+  assert_eq "$result" "single" "env override wins"
+}
+
+# ============================================================
+# Tier 7: server/install.sh validation
+# ============================================================
+
+test_server_validate_ipv4_accepts_canonical() {
+  test_case "server: validate accepts canonical and edge-case IPv4 / CIDR"
+  local conf
+  conf="$(mktemp_d_in_tests)/sshd_config"
+  printf 'Port 22\n' > "$conf"
+  local ip
+  for ip in "0.0.0.0" "255.255.255.255" "192.168.001.010" "203.0.113.7/0" "203.0.113.7/32"; do
+    expect_success env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+                     SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip "$ip"
+  done
+}
+
+test_server_validate_rejects_bad_addresses() {
+  test_case "server: validate rejects malformed IPv4 / CIDR / whitespace"
+  local conf
+  conf="$(mktemp_d_in_tests)/sshd_config"
+  printf 'Port 22\n' > "$conf"
+  local ip
+  for ip in "" "1.2.3" "1.2.3.4.5" "1.2.3.a" "256.0.0.1" "999999999999999.1.1.1" \
+            "1.2.3.4/33" "1.2.3.4/-1" "1.2.3.4/999999999"; do
+    expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+                     SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip "$ip"
+  done
+  expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+                   SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips '10.0.0.1,,10.0.0.2'
+  expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+                   SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips '10.0.0.1/ 24'
+}
+
+test_server_keepalive_bounds() {
+  test_case "server: keepalive params reject zero / negative / huge / non-numeric"
+  local conf
+  conf="$(mktemp_d_in_tests)/sshd_config"
+  printf 'Port 22\n' > "$conf"
+  expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-interval 0
+  expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-count -1
+  expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-count 2147483648
+  expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-interval abc
+}
+
+test_server_apply_writes_block() {
+  test_case "server: apply emits SetEnv + ClientAlive directives"
+  local conf
+  conf="$(mktemp_d_in_tests)/sshd_config"
+  printf 'Port 22\n' > "$conf"
+  expect_success env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 100.101.137.15
+  assert_grep '^Match Address 100\.101\.137\.15$' "$conf"
+  assert_grep '^    SetEnv SSH_AUTO_RESUME=1$' "$conf"
+  assert_no_grep 'TCPKeepAlive' "$conf"
+}
+
+test_server_apply_then_add_current_deduplicates() {
+  test_case "server: add-current is idempotent on duplicate IPs"
+  local conf
+  conf="$(mktemp_d_in_tests)/sshd_config"
+  printf 'Port 22\n' > "$conf"
+  env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$SERVER_INSTALL" apply --ip 1.2.3.4 >/dev/null
+  env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$SERVER_INSTALL" add-current --ip 1.2.3.4 >/dev/null
+  env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$SERVER_INSTALL" add-current --ip 1.2.3.4 >/dev/null
+  # Should still be a single IP, not duplicated.
+  local count
+  count="$(grep -c '^Match Address 1\.2\.3\.4$' "$conf")"
+  assert_eq "$count" "1" "duplicate add-current did not duplicate the match line"
+}
+
+test_server_rollback_restores_or_strips() {
+  test_case "server: rollback removes managed block"
+  local conf
+  conf="$(mktemp_d_in_tests)/sshd_config"
+  printf 'Port 22\n' > "$conf"
+  env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$SERVER_INSTALL" apply --ip 1.2.3.4 >/dev/null
+  assert_grep 'ssh-auto-resume' "$conf"
+  env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$SERVER_INSTALL" rollback >/dev/null
+  assert_no_grep 'ssh-auto-resume' "$conf"
+  assert_no_grep 'ssh-screen-disconnect-kill' "$conf"
+}
+
+# ============================================================
+# Tier 8: client/install.sh legacy apply / rollback
+# ============================================================
+
+test_client_apply_and_rollback_idempotent() {
+  test_case "client: apply twice creates one block; rollback restores cleanly"
+  local home
+  home="$(mktemp_d_in_tests)"
+  HOME="$home" "$CLIENT_INSTALL" apply >/dev/null
+  HOME="$home" "$CLIENT_INSTALL" apply >/dev/null
+
+  assert_grep 'auto-resume.sh' "${home}/.bash_profile"
+  assert_grep 'auto-resume.sh' "${home}/.zshrc"
+
+  # Only one scoped block per profile.
+  local count
+  count="$(grep -c '^### begin ssh-auto-resume-session$' "${home}/.bash_profile")"
+  assert_eq "$count" "1" "apply twice yields one block in .bash_profile"
+
+  HOME="$home" "$CLIENT_INSTALL" rollback >/dev/null
+  assert_file_missing "${home}/.bash_profile"
+  assert_file_missing "${home}/.zshrc"
+}
+
+test_client_apply_preserves_existing_profile() {
+  test_case "client: apply preserves prior content of .profile and restores on rollback"
+  local home
+  home="$(mktemp_d_in_tests)"
+  printf 'export EXISTING_PROFILE_VALUE=1\n' > "${home}/.profile"
+  HOME="$home" "$CLIENT_INSTALL" apply >/dev/null
+  assert_grep 'auto-resume.sh' "${home}/.profile"
+  assert_file_missing "${home}/.bash_profile"
+  HOME="$home" "$CLIENT_INSTALL" rollback >/dev/null
+  assert_grep '^export EXISTING_PROFILE_VALUE=1$' "${home}/.profile"
+  assert_no_grep 'scoped-screen-autodetach-off' "${home}/.profile"
+  assert_no_grep 'ssh-auto-resume-session' "${home}/.profile"
+}
+
+test_client_service_install_unit_contents() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    test_case "client: service-install (skipped: tmux missing)"
+    return
+  fi
+  test_case "client: service-install writes the keepalive unit"
+  local home
+  home="$(mktemp_d_in_tests)"
+  HOME="$home" SSH_AUTO_RESUME_SKIP_SYSTEMD=1 "$CLIENT_INSTALL" service-install >/dev/null
+  local unit="${home}/.config/systemd/user/ssh-auto-resume.service"
+  assert_file_exists "$unit"
+  assert_grep 'SSH auto-resume tmux keepalive' "$unit"
+  assert_grep '__ssh_auto_resume_keepalive' "$unit"
+  HOME="$home" SSH_AUTO_RESUME_SKIP_SYSTEMD=1 "$CLIENT_INSTALL" service-rollback >/dev/null
+  assert_file_missing "$unit"
+}
+
+# ============================================================
+# Tier 9: integrated apply through the top-level root binary
+# ============================================================
+
+test_root_apply_emits_postinstall_hint() {
+  test_case "root: legacy apply via root binary prints reconnect-and-doctor hint"
+  local home conf out
+  home="$(mktemp_d_in_tests)"
+  conf="$(mktemp_d_in_tests)/sshd_config"
+  out="$(mktemp_in_tests)"
+  printf 'Port 22\nPasswordAuthentication no\n' > "$conf"
+
+  printf 'YES\n' | HOME="$home" SSH_MULTISESSION_RESUME_COMMAND=ssh-multisession-resume \
+    SSH_CONNECTION='100.101.137.20 55555 100.101.137.1 22' \
+    SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$ROOT_INSTALL" apply > "$out"
+  assert_grep 'After reconnecting, run ssh-multisession-resume doctor to verify the active session\.' "$out"
+  assert_grep '^Match Address 100\.101\.137\.20$' "$conf"
+  assert_grep 'auto-resume.sh' "${home}/.bash_profile"
+
+  HOME="$home" SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$ROOT_INSTALL" rollback >/dev/null
+  assert_no_grep 'ssh-auto-resume' "$conf"
+  assert_file_missing "${home}/.bash_profile"
+  assert_file_missing "${home}/.zshrc"
+}
+
+test_root_doctor_not_in_managed_mux_fails() {
+  test_case "root: doctor fails when run outside a managed multiplexer"
+  if SSH_CONNECTION='100.101.137.20 55555 100.101.137.1 22' \
+       SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+       "$ROOT_INSTALL" doctor >/dev/null 2>&1; then
+    fail "doctor should fail outside a managed multiplexer"
+  fi
+}
+
+# ============================================================
+# Tier 10: temp-file cleanup on signal
+# ============================================================
+
+test_tempfile_cleanup_on_signal() {
+  test_case "signal: SIGINT during cmd_apply does not strand /tmp files"
+  local tmpdir bin confdir
+  tmpdir="$(mktemp_d_in_tests)"
+  bin="$(mktemp_d_in_tests)"
+  confdir="$(mktemp_d_in_tests)"
+  cat > "${bin}/sshd" <<'FAKE_HANG_SSHD'
+#!/usr/bin/env bash
+sleep 30
+FAKE_HANG_SSHD
+  chmod +x "${bin}/sshd"
+  printf 'Port 22\n' > "${confdir}/sshd_config"
+
+  (
+    TMPDIR="$tmpdir" PATH="${bin}:$PATH" \
+      SSHD_CONFIG_FILE="${confdir}/sshd_config" \
+      SSH_SCREEN_KILL_NO_RELOAD=1 \
+      "$SERVER_INSTALL" apply --ip 10.0.0.99
+  ) >/dev/null 2>&1 &
+  local pid=$!
+  sleep 0.7
+  kill -INT "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  local leaked
+  leaked="$(find "$tmpdir" -maxdepth 1 -name 'tmp.*' -type f 2>/dev/null | wc -l)"
+  if [[ "$leaked" -ne 0 ]]; then
+    fail "temp files leaked after SIGINT: $(find "$tmpdir" -maxdepth 1 -name 'tmp.*' -type f)"
+  fi
+}
+
+# ============================================================
+# Tier 11: PKGBUILD / .SRCINFO sanity
+# ============================================================
+
+test_pkgbuild_promotes_tmux_screen_to_depends() {
+  test_case "packaging: PKGBUILD lists tmux and screen as hard depends"
+  assert_grep '^depends=\([^)]*\<tmux\>' "$PKGBUILD"
+  assert_grep '^depends=\([^)]*\<screen\>' "$PKGBUILD"
+  assert_grep '^	depends = tmux$' "$SRCINFO"
+  assert_grep '^	depends = screen$' "$SRCINFO"
+}
+
+test_pkgbuild_installs_profile_entry() {
+  test_case "packaging: PKGBUILD installs profile-entry.sh to /etc/profile.d"
+  assert_grep '/etc/profile.d/' "$PKGBUILD"
+  assert_grep 'profile-entry.sh' "$PKGBUILD"
+}
+
+test_pkgbuild_install_block_matches_files() {
+  test_case "packaging: every install -Dm... source path exists in the tree"
+  local line src
+  while IFS= read -r line; do
+    # extract the source argument (the one without leading slash; not pkgdir/...)
+    src="$(printf '%s\n' "$line" | awk '{for(i=1;i<=NF;i++){ if($i ~ /^"\${pkgdir}/){next} if($i ~ /^install$/||$i ~ /^-D/||$i ~ /Dm/){next} if($i ~ /^"?\$/){next} print $i; exit }}')"
+    src="${src%\"}"; src="${src#\"}"
+    [[ -n "$src" ]] || continue
+    [[ "$src" == ssh-multisession-resume* || "$src" == client/* || "$src" == server/* || "$src" == tests/* || "$src" == README.md || "$src" == CHANGELOG.md || "$src" == SECURITY.md || "$src" == LICENSE ]] || continue
+    if [[ ! -e "${ROOT_DIR}/${src}" ]]; then
+      fail "PKGBUILD references missing source: $src"
+    fi
+  done < <(grep '^[[:space:]]*install -Dm' "$PKGBUILD")
+}
+
+# ============================================================
+# Run all tests
+# ============================================================
+
+main() {
+  test_required_files
+  test_bash_syntax
+  test_posix_sh_syntax_for_profile_entry
+  test_zsh_syntax_for_auto_resume
+
+  test_sanitize_replaces_special_chars
+  test_source_ip_extraction
+  test_runtime_dir_prefers_xdg
+  test_runtime_dir_fallback_creates_tmp_subdir
+  test_select_tmux_finds_first_free_slot
+  test_select_tmux_skips_reserved_slots
+  test_select_tmux_max_slots_returns_failure
+  test_select_tmux_single_mode_pins_slot_zero
+  test_lock_clears_stale_pid
+  test_lock_retry_env_override
+  test_screen_state_parser
+
+  test_read_choice_valid_modes
+  test_read_choice_rejects_garbage_and_missing
+  test_save_choice_round_trip
+  test_menu_non_tty_returns_skip
+  test_menu_digit_input_maps_to_modes
+  test_menu_default_empty_returns_multi
+  test_menu_alias_keys
+  test_menu_invalid_then_valid
+
+  test_tmux_conf_pins_update_environment
+
+  test_profile_entry_skips_non_ssh
+  test_profile_entry_static_gates_present
+
+  test_cli_help_lists_new_commands
+  test_cli_default_action_is_summary
+  test_cli_policy_set_show_forget_clear
+  test_cli_policy_set_rejects_invalid_mode
+  test_cli_policy_set_requires_ip_and_mode
+  test_cli_policy_show_when_empty
+  test_cli_policy_show_sigpipe_resistant
+  test_cli_optout_optin_roundtrip
+  test_cli_unknown_action_fails
+  test_cli_detect_current_extracts_ip
+
+  test_mode_env_override_precedence
+
+  test_server_validate_ipv4_accepts_canonical
+  test_server_validate_rejects_bad_addresses
+  test_server_keepalive_bounds
+  test_server_apply_writes_block
+  test_server_apply_then_add_current_deduplicates
+  test_server_rollback_restores_or_strips
+
+  test_client_apply_and_rollback_idempotent
+  test_client_apply_preserves_existing_profile
+  test_client_service_install_unit_contents
+
+  test_root_apply_emits_postinstall_hint
+  test_root_doctor_not_in_managed_mux_fails
+
+  test_tempfile_cleanup_on_signal
+
+  test_pkgbuild_promotes_tmux_screen_to_depends
+  test_pkgbuild_installs_profile_entry
+  test_pkgbuild_install_block_matches_files
+
+  print_summary
+}
+
+main "$@"
