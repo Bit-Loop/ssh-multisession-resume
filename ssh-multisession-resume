@@ -259,7 +259,7 @@ install_packages() {
 
   case "$manager" in
     pacman)
-      run_as_root pacman -S --needed "$@"
+      run_as_root pacman -S --needed --noconfirm "$@"
       ;;
     apt-get)
       run_as_root apt-get update

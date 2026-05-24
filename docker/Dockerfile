@@ -1,10 +1,11 @@
 FROM archlinux:base-devel
 
-# Single-layer install for the runtime + build deps we exercise in tests.
+# Intentionally NOT pre-installing tmux or screen. The application owns its
+# own dependency installation via `ssh-multisession-resume deps`. The
+# container verifies that flow end-to-end. Everything below is either a
+# system-level base (bash, sudo, openssh) or test-only tooling.
 RUN pacman -Syu --noconfirm --needed \
         bash \
-        tmux \
-        screen \
         openssh \
         sudo \
         shellcheck \
@@ -17,6 +18,7 @@ RUN pacman -Syu --noconfirm --needed \
         sed \
         procps-ng \
         util-linux \
+        lsof \
     && pacman -Scc --noconfirm
 
 # makepkg refuses to run as root, but most of our checks are package-free.
