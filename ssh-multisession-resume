@@ -34,7 +34,7 @@ Usage:
   ${cmd} policy clear                   drop all saved choices
   ${cmd} opt-out                        disable the SSH menu for this user
   ${cmd} opt-in                         re-enable the SSH menu for this user
-  ${cmd} detect-current                 print the current SSH client IP
+  ${cmd} detect-current                 print the current SSH client address
   ${cmd} deps                           check or install tmux/screen
 
 Advanced / source-checkout commands:

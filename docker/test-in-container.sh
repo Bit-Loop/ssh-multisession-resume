@@ -6,9 +6,9 @@
 #   --phase save       set persistent state into $HOME for the second container
 #   --phase verify     read the saved state back; assert "reboot" survival
 #
-# Note: tmux and screen are intentionally NOT in the base image. The script
-# exercises `ssh-multisession-resume deps` to install them, proving zero
-# manual setup beyond first-connect menu selection.
+# Note: tmux and screen are intentionally NOT in the base image. The full run
+# builds and installs the local package with makepkg, proving those multiplexers
+# arrive through package dependency resolution.
 set -uo pipefail
 
 cd /work || { echo "missing /work mount" >&2; exit 2; }
@@ -55,54 +55,106 @@ EOF
   sudo chmod 755 /usr/bin/ssh-multisession-resume
 }
 
+build_and_install_local_package() {
+  local build_dir src_name pkg_file current_pkgver
+
+  build_dir="$(mktemp -d)"
+  src_name="${PROG_NAME}-source"
+  current_pkgver="$(awk -F= '$1 == "pkgver" { print $2; exit }' /work/PKGBUILD)"
+  mkdir -p "${build_dir}/${src_name}"
+
+  tar -C /work \
+    --exclude='./.git' \
+    --exclude='./.aur' \
+    --exclude='./.agents' \
+    --exclude='./.codex' \
+    --exclude='./pkg' \
+    --exclude='./src' \
+    --exclude='./docker/output' \
+    --exclude='./ssh-multisession-resume-source' \
+    -cf - . | tar -C "${build_dir}/${src_name}" -xf -
+
+  tar -C "$build_dir" -czf "${build_dir}/${src_name}.tar.gz" "$src_name"
+  sed \
+    -e 's|^source=.*|source=("${_srcname}.tar.gz")|' \
+    -e "s|^sha256sums=.*|sha256sums=('SKIP')|" \
+    /work/PKGBUILD > "${build_dir}/PKGBUILD"
+  {
+    printf '\n'
+    printf 'pkgver() {\n'
+    printf "  printf '%%s\\\\n' '%s'\n" "$current_pkgver"
+    printf '}\n'
+  } >> "${build_dir}/PKGBUILD"
+  cp /work/ssh-multisession-resume.install "$build_dir/"
+
+  if (cd "$build_dir" && makepkg --syncdeps --install --noconfirm --needed); then
+    pkg_file="$(find "$build_dir" -maxdepth 1 -name "${PROG_NAME}-git-*.pkg.tar.*" -print -quit)"
+    if [[ -n "$pkg_file" ]]; then
+      ok "built package artifact: $(basename "$pkg_file")"
+      if [[ "$(basename "$pkg_file")" == *'0.r.g'* ]]; then
+        fail "package artifact has invalid fallback pkgver: $(basename "$pkg_file")"
+      fi
+    else
+      fail "package artifact missing after makepkg"
+    fi
+  else
+    fail "makepkg --syncdeps --install failed"
+  fi
+
+  rm -rf "$build_dir"
+}
+
 run_full_suite() {
   # ------------------------------------------------------------------
-  heading "Phase A: package install (simulates AUR pacman -S)"
-  # ------------------------------------------------------------------
-  install_package_files
-  for path in "${LIB_DIR}/ssh-multisession-resume" "${ETC_HOOK}" /usr/bin/ssh-multisession-resume; do
-    [[ -e "$path" ]] && ok "installed $path" || fail "missing $path"
-  done
-
-  # ------------------------------------------------------------------
-  heading "Phase B: auto-install tmux + screen via the script"
+  heading "Phase A: minimal image baseline"
   # ------------------------------------------------------------------
   if command -v tmux >/dev/null 2>&1; then
-    fail "tmux unexpectedly preinstalled — image is not minimal"
+    fail "tmux unexpectedly preinstalled - image is not minimal"
   else
     ok "tmux not preinstalled (baseline)"
   fi
   if command -v screen >/dev/null 2>&1; then
-    fail "screen unexpectedly preinstalled — image is not minimal"
+    fail "screen unexpectedly preinstalled - image is not minimal"
   else
     ok "screen not preinstalled (baseline)"
   fi
 
-  if printf 'YES\n' | ssh-multisession-resume deps; then
-    ok "deps subcommand exited 0"
+  # ------------------------------------------------------------------
+  heading "Phase B: package install resolves runtime deps"
+  # ------------------------------------------------------------------
+  build_and_install_local_package
+  if pacman -Q "${PROG_NAME}-git" >/dev/null 2>&1; then
+    ok "package installed via pacman: ${PROG_NAME}-git"
   else
-    fail "deps subcommand failed"
+    fail "package not installed via pacman"
   fi
+  for path in "${LIB_DIR}/ssh-multisession-resume" "${ETC_HOOK}" /usr/bin/ssh-multisession-resume; do
+    if [[ -e "$path" ]]; then
+      ok "installed $path"
+    else
+      fail "missing $path"
+    fi
+  done
 
   if command -v tmux >/dev/null 2>&1; then
-    ok "tmux installed by script: $(command -v tmux)"
+    ok "tmux installed as package dependency: $(command -v tmux)"
   else
-    fail "tmux still missing after deps"
+    fail "tmux still missing after package install"
   fi
   if command -v screen >/dev/null 2>&1; then
-    ok "screen installed by script: $(command -v screen)"
+    ok "screen installed as package dependency: $(command -v screen)"
   else
-    fail "screen still missing after deps"
+    fail "screen still missing after package install"
   fi
 
   # ------------------------------------------------------------------
-  heading "Phase C: TDD smoke suite (55 cases)"
+  heading "Phase C: TDD smoke suite"
   # ------------------------------------------------------------------
   # Now that tmux/screen are present, the suite's apply/rollback assertions
   # (which call `client/install.sh apply` and check ~/.bash_profile etc.)
   # can exercise their happy path.
   if env -u TMUX -u STY bash tests/smoke.sh; then
-    ok "smoke suite (55/55)"
+    ok "smoke suite"
   else
     fail "smoke suite"
   fi
@@ -144,17 +196,32 @@ run_full_suite() {
   # ------------------------------------------------------------------
   heading "Phase E: CLI surface non-interactive"
   # ------------------------------------------------------------------
-  ssh-multisession-resume policy set 10.0.0.42 single >/dev/null && \
-    ok "policy set 10.0.0.42 single" || fail "policy set failed"
-  ssh-multisession-resume policy set 192.168.1.5 multi >/dev/null && \
-    ok "policy set 192.168.1.5 multi" || fail "policy set failed"
+  if ssh-multisession-resume policy set 10.0.0.42 single >/dev/null; then
+    ok "policy set 10.0.0.42 single"
+  else
+    fail "policy set failed"
+  fi
+  if ssh-multisession-resume policy set 192.168.1.5 multi >/dev/null; then
+    ok "policy set 192.168.1.5 multi"
+  else
+    fail "policy set failed"
+  fi
   ssh-multisession-resume policy show > /tmp/policy.out
-  grep -q '10_0_0_42 -> single' /tmp/policy.out && \
-    ok "policy show lists 10_0_0_42 -> single" || fail "policy show missing 10_0_0_42"
-  grep -q '192_168_1_5 -> multi' /tmp/policy.out && \
-    ok "policy show lists 192_168_1_5 -> multi" || fail "policy show missing 192_168_1_5"
-  ssh-multisession-resume policy clear >/dev/null && \
-    ok "policy clear" || fail "policy clear failed"
+  if grep -q '10_0_0_42 -> single' /tmp/policy.out; then
+    ok "policy show lists 10_0_0_42 -> single"
+  else
+    fail "policy show missing 10_0_0_42"
+  fi
+  if grep -q '192_168_1_5 -> multi' /tmp/policy.out; then
+    ok "policy show lists 192_168_1_5 -> multi"
+  else
+    fail "policy show missing 192_168_1_5"
+  fi
+  if ssh-multisession-resume policy clear >/dev/null; then
+    ok "policy clear"
+  else
+    fail "policy clear failed"
+  fi
 
   sum_out="$(ssh-multisession-resume </dev/null 2>&1 || true)"
   if [[ "$sum_out" == *"Install:"* ]] && [[ "$sum_out" == *"Next steps:"* ]] && \
@@ -168,12 +235,31 @@ run_full_suite() {
   heading "Phase F: X11 + Wayland env-refresh pinning"
   # ------------------------------------------------------------------
   conf="${LIB_DIR}/client/tmux-auto-resume.conf"
-  grep -q '^set-option -g update-environment .*DISPLAY' "$conf"          && \
-    ok "tmux pins DISPLAY"          || fail "tmux conf missing DISPLAY"
-  grep -q 'WAYLAND_DISPLAY' "$conf" && ok "tmux pins WAYLAND_DISPLAY" || fail "missing WAYLAND_DISPLAY"
-  grep -q 'SSH_AUTH_SOCK'  "$conf"  && ok "tmux pins SSH_AUTH_SOCK"  || fail "missing SSH_AUTH_SOCK"
-  grep -q 'XAUTHORITY'     "$conf"  && ok "tmux pins XAUTHORITY"     || fail "missing XAUTHORITY"
-  grep -q 'SSH_AGENT_PID'  "$conf"  && ok "tmux pins SSH_AGENT_PID"  || fail "missing SSH_AGENT_PID"
+  if grep -q '^set-option -g update-environment .*DISPLAY' "$conf"; then
+    ok "tmux pins DISPLAY"
+  else
+    fail "tmux conf missing DISPLAY"
+  fi
+  if grep -q 'WAYLAND_DISPLAY' "$conf"; then
+    ok "tmux pins WAYLAND_DISPLAY"
+  else
+    fail "missing WAYLAND_DISPLAY"
+  fi
+  if grep -q 'SSH_AUTH_SOCK' "$conf"; then
+    ok "tmux pins SSH_AUTH_SOCK"
+  else
+    fail "missing SSH_AUTH_SOCK"
+  fi
+  if grep -q 'XAUTHORITY' "$conf"; then
+    ok "tmux pins XAUTHORITY"
+  else
+    fail "missing XAUTHORITY"
+  fi
+  if grep -q 'SSH_AGENT_PID' "$conf"; then
+    ok "tmux pins SSH_AGENT_PID"
+  else
+    fail "missing SSH_AGENT_PID"
+  fi
 
   # ------------------------------------------------------------------
   heading "Phase G: resource-leak checks"
@@ -309,7 +395,7 @@ run_full_suite() {
   source="100_101_137_99"
   conc_rt="$(mktemp -d)"
   pids=()
-  for i in 1 2 3 4 5; do
+  for ((attempt = 1; attempt <= 5; attempt++)); do
     (
       AUTO_RESUME=/work/client/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c "
         set +e
@@ -328,7 +414,7 @@ run_full_suite() {
             # Release the lock so the next shell can pick a new slot, but
             # keep the reservation alive (real flow: tmux attach is here).
             _ssh_auto_resume_unlock
-            sleep 0.4
+            sleep 2
           else
             _ssh_auto_resume_unlock
           fi

@@ -1,7 +1,7 @@
 # Verification Report — ssh-multisession-resume
 
 **Date:** 2026-05-24
-**Commit under test:** `604577b` (`main`)
+**Commit under test:** local release candidate working tree
 **Test target:** zero-touch SSH session resume + per-IP single/multi/skip menu
 **Tester:** automated suite via `docker/run.sh`
 
@@ -11,8 +11,9 @@
 
 This run verifies, against a clean Arch container:
 
-1. **Auto-install of deps.** The image ships *without* `tmux` or `screen`;
-   the script must install them itself via `ssh-multisession-resume deps`.
+1. **Package dependency install.** The image ships *without* `tmux` or
+   `screen`; `makepkg --syncdeps --install` must install them through the
+   package dependency metadata.
 2. **Zero-touch deployment.** A user installs the package and need do
    nothing else beyond the first-connect menu pick.
 3. **No resource, session, or environment leaks.** Repeated invocations of
@@ -43,8 +44,8 @@ This run verifies, against a clean Arch container:
 Two-tier verification:
 
 - **Tier 1** — single-container run (`./docker/run.sh test`)
-  Runs 10 phases (A–J) covering install, deps auto-install, the 55-case
-  TDD smoke suite, zero-touch gate behavior, CLI surface, env pinning,
+  Runs 10 phases (A–J) covering install, package dependency resolution, the
+  59-case TDD smoke suite, zero-touch gate behavior, CLI surface, env pinning,
   resource leaks, edge cases, concurrent races, and state preparation
   for tier 2.
 - **Tier 2** — two-container persistence (`./docker/run.sh persistence`)
@@ -61,14 +62,16 @@ Both tiers ran cleanly on `2026-05-24`.
 ### Tier 1 — single container
 
 ```
-Phase A: package install                                3/3 PASS
-Phase B: auto-install tmux + screen via the script     5/5 PASS
+Phase A: minimal image baseline                         2/2 PASS
   - tmux not preinstalled (baseline)                       ok
   - screen not preinstalled (baseline)                     ok
-  - deps subcommand exited 0                               ok
-  - tmux installed by script: /usr/sbin/tmux               ok
-  - screen installed by script: /usr/sbin/screen           ok
-Phase C: TDD smoke suite                                 55/55 PASS
+Phase B: package install resolves runtime deps          7/7 PASS
+  - package artifact built with makepkg                     ok
+  - package installed via pacman                            ok
+  - package-owned command and profile hook installed        ok
+  - tmux installed as package dependency: /usr/sbin/tmux   ok
+  - screen installed as package dependency: /usr/sbin/screen ok
+Phase C: TDD smoke suite                                 59/59 PASS
 Phase D: zero-touch profile.d hook gates                 3/3 PASS
   - non-SSH login is a clean no-op                         ok
   - opt-out short-circuits cleanly                         ok
@@ -84,11 +87,10 @@ Phase G: resource-leak checks                            3/3 PASS
   - no runtime dir created for skip-mode users             ok
 Phase H: edge-case input handling                        7/7 PASS
 Phase I: concurrent slot allocation race                 1/1 PASS
-  - 4 unique winners out of 5 attempts; the 5th gracefully
-    declined under the 5s lock-retry budget.               ok
+  - 5 unique winners out of 5 attempts.                     ok
 Phase J: phase-save state into HOME                      1/1 PASS
 
-Tier 1 total: 35 passed, 0 failed
+Tier 1 total: 36 passed, 0 failed
 ```
 
 ### Tier 2 — two-container persistence
@@ -106,7 +108,7 @@ Phase 2/2 (container B): verify state survived "reboot"  5/5 PASS
 Tier 2 total: 6 passed, 0 failed
 ```
 
-**Grand total: 41 container-level assertions, 0 failures, plus 55/55 TDD smoke cases.**
+**Grand total: 42 container-level assertions, 0 failures, plus 59/59 TDD smoke cases.**
 
 ## Findings
 
@@ -159,6 +161,9 @@ files in `/tmp`, `$XDG_RUNTIME_DIR`, or the choices directory.
 - Very long IP (450 chars after sanitization) → handled cleanly.
 - IPs with non-ASCII characters → sanitized to `[A-Za-z0-9_-]` only.
 - Empty IP → stays empty (no path traversal possible).
+- IPv6 source addresses, CIDRs, IPv4-mapped IPv6, and scoped link-local forms
+  such as `fe80::1%eth0` are accepted by the server installer and validated
+  against OpenSSH `Match Address` syntax.
 
 ### Concurrent first-connect race
 
@@ -193,7 +198,7 @@ Per-run logs land in `docker/output/<UTC-timestamp>.log` (gitignored).
 
 ## Conclusion
 
-As of 2026-05-24, on commit `604577b`:
+As of 2026-05-24, on the local release candidate:
 
 - The user does **nothing** to set up `ssh-multisession-resume` beyond
   installing the AUR package (`pacman -S ssh-multisession-resume-git`).

@@ -1,9 +1,8 @@
 FROM archlinux:base-devel
 
-# Intentionally NOT pre-installing tmux or screen. The application owns its
-# own dependency installation via `ssh-multisession-resume deps`. The
-# container verifies that flow end-to-end. Everything below is either a
-# system-level base (bash, sudo, openssh) or test-only tooling.
+# Intentionally NOT pre-installing tmux or screen. The package depends on both,
+# and the container verifies that makepkg/pacman installs them. Everything
+# below is either a system-level base (bash, sudo, openssh) or test-only tooling.
 RUN pacman -Syu --noconfirm --needed \
         bash \
         openssh \

@@ -13,12 +13,11 @@ Reproducible TDD on a clean Arch base image. Mirrors what an AUR user gets.
 
 ## What it does
 
-1. Builds `archlinux:base-devel` + the runtime/build deps the suite
-   exercises (`bash`, `tmux`, `screen`, `openssh`, `sudo`, `shellcheck`,
-   `zsh`, `dash`).
-2. Runs `tests/smoke.sh` — the 55-case TDD suite.
-3. Re-implements the PKGBUILD `package()` step in `/usr/lib/...` and
-   `/etc/profile.d/...` exactly the way the AUR install would.
+1. Builds `archlinux:base-devel` with system and test tooling only. `tmux`
+   and `screen` are deliberately absent from the image.
+2. Builds and installs the local package with `makepkg --syncdeps --install`,
+   proving `tmux` and `screen` arrive through package dependency resolution.
+3. Runs `tests/smoke.sh`, the TDD smoke suite.
 4. Asserts the **zero-touch** guarantees, in order:
    - Non-SSH login is a clean no-op.
    - `~/.config/ssh-multisession-resume/opt-out` short-circuits without
@@ -29,8 +28,7 @@ Reproducible TDD on a clean Arch base image. Mirrors what an AUR user gets.
    - `--help` advertises every user-facing subcommand.
    - The default no-args action is non-interactive (no Y/N prompt).
 
-If every assertion holds, the container exits 0 with
-`ALL CONTAINER TESTS PASSED`.
+If every assertion holds, the container exits 0 with `CONTAINER PHASE OK`.
 
 ## Outputs
 

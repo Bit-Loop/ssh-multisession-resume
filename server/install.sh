@@ -34,7 +34,7 @@ Keepalive defaults:
   --keepalive-count 3
 
 Notes:
-  Any exact IPv4 address or IPv4 CIDR range is accepted.
+  Exact IPv4/IPv6 addresses and IPv4/IPv6 CIDR ranges are accepted.
   Repeat --ip or use --ips for multiple sources.
   Use --match-host only if reverse DNS is reliable.
   detect-current reads SSH_CONNECTION/SSH_CLIENT and does not need root.
@@ -132,18 +132,142 @@ validate_ipv4_value() {
   done
 }
 
+validate_ipv6_hextet() {
+  local hextet="$1"
+  local ip="$2"
+
+  if ! [[ "$hextet" =~ ^[0-9A-Fa-f]{1,4}$ ]]; then
+    usage_error "Invalid IPv6 hextet in ${ip}: ${hextet}"
+  fi
+}
+
+validate_ipv6_parts() {
+  local section="$1"
+  local ip="$2"
+  local part
+  local count=0
+  local -a parts=()
+
+  if [[ -z "$section" ]]; then
+    printf '0\n'
+    return 0
+  fi
+
+  IFS=: read -r -a parts <<< "$section"
+  for part in "${parts[@]}"; do
+    if [[ -z "$part" ]]; then
+      usage_error "Invalid IPv6 address: ${ip}"
+    fi
+    validate_ipv6_hextet "$part" "$ip"
+    count=$((count + 1))
+  done
+
+  printf '%s\n' "$count"
+}
+
+validate_ipv6_value() {
+  local ip="$1"
+  local parse_ip="$ip"
+  local head tail ipv4_tail
+  local head_count tail_count total
+  local embedded_hextets=0
+
+  if [[ -z "$ip" ]]; then
+    usage_error "IP cannot be empty."
+  fi
+
+  if [[ "$ip" != *:* ]]; then
+    usage_error "IPv6 address must contain ':' characters: ${ip}"
+  fi
+
+  if ! [[ "$ip" =~ ^[0-9A-Fa-f:.]+$ ]]; then
+    usage_error "Invalid IPv6 address characters: ${ip}"
+  fi
+
+  if [[ "$parse_ip" == *.* ]]; then
+    ipv4_tail="${parse_ip##*:}"
+    validate_ipv4_value "$ipv4_tail"
+    if [[ "$parse_ip" == *"::${ipv4_tail}" ]]; then
+      parse_ip="${parse_ip%:*}:"
+    else
+      parse_ip="${parse_ip%:*}"
+    fi
+    embedded_hextets=2
+  fi
+
+  if [[ "$parse_ip" == *"::"* ]]; then
+    if [[ "${parse_ip#*::}" == *"::"* ]]; then
+      usage_error "Invalid IPv6 address with multiple :: runs: ${ip}"
+    fi
+
+    head="${parse_ip%%::*}"
+    tail="${parse_ip#*::}"
+    head_count="$(validate_ipv6_parts "$head" "$ip")"
+    tail_count="$(validate_ipv6_parts "$tail" "$ip")"
+    total=$((head_count + tail_count + embedded_hextets))
+    if (( total >= 8 )); then
+      usage_error "Invalid IPv6 compressed address: ${ip}"
+    fi
+    return 0
+  fi
+
+  total="$(validate_ipv6_parts "$parse_ip" "$ip")"
+  total=$((total + embedded_hextets))
+  if (( total != 8 )); then
+    usage_error "Invalid IPv6 address length: ${ip}"
+  fi
+}
+
 validate_address() {
   local value="$1"
   local ip="$value"
   local prefix=""
+  local prefix_max=32
+  local zone=""
 
   if [[ "$value" == */* ]]; then
     ip="${value%/*}"
     prefix="${value#*/}"
-    validate_uint_range "CIDR prefix in ${value}" "$prefix" 0 32
+    if [[ "$ip" == */* || -z "$prefix" || "$prefix" == */* ]]; then
+      usage_error "Invalid CIDR address: ${value}"
+    fi
+    if [[ "$prefix" == *%* ]]; then
+      zone="${prefix#*%}"
+      prefix="${prefix%%\%*}"
+      if [[ -z "$zone" ]]; then
+        usage_error "Invalid empty IPv6 zone identifier: ${value}"
+      fi
+    fi
   fi
 
-  validate_ipv4_value "$ip"
+  if [[ "$ip" == *%* ]]; then
+    if [[ -n "$zone" ]]; then
+      usage_error "Invalid duplicate IPv6 zone identifier: ${value}"
+    fi
+    zone="${ip#*%}"
+    ip="${ip%%\%*}"
+    if [[ -z "$zone" ]]; then
+      usage_error "Invalid empty IPv6 zone identifier: ${value}"
+    fi
+  fi
+
+  if [[ -n "$zone" ]]; then
+    if [[ "$zone" == *%* || ! "$zone" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+      usage_error "Invalid IPv6 zone identifier in ${value}: ${zone}"
+    fi
+    if [[ "$ip" != *:* ]]; then
+      usage_error "IPv6 zone identifiers require an IPv6 address: ${value}"
+    fi
+  fi
+
+  if [[ "$ip" == *:* ]]; then
+    prefix_max=128
+    [[ -z "$prefix" ]] || validate_uint_range "CIDR prefix in ${value}" "$prefix" 0 "$prefix_max"
+    validate_ipv6_value "$ip"
+  else
+    [[ -z "$prefix" ]] || validate_uint_range "CIDR prefix in ${value}" "$prefix" 0 "$prefix_max"
+    validate_ipv4_value "$ip"
+  fi
 }
 
 add_address_list() {
@@ -380,7 +504,11 @@ detect_current_ip() {
     who_line="$(who -m 2>/dev/null || who am i 2>/dev/null || true)"
     if [[ "$who_line" =~ \(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\) ]]; then
       candidate="${BASH_REMATCH[1]}"
+    elif [[ "$who_line" =~ \(([0-9A-Fa-f:.%A-Za-z0-9_.-]+)\) ]]; then
+      candidate="${BASH_REMATCH[1]}"
     elif [[ "$who_line" =~ ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
+      candidate="${BASH_REMATCH[1]}"
+    elif [[ "$who_line" =~ ([0-9A-Fa-f]+:[0-9A-Fa-f:.%A-Za-z0-9_.-]+) ]]; then
       candidate="${BASH_REMATCH[1]}"
     fi
   fi

@@ -276,9 +276,9 @@ are enabled.
 ## Notes
 
 - Linux/OpenSSH is assumed.
-- Exact IPv4 addresses and IPv4 CIDR ranges from any IPv4 network are
-  supported. It is not limited to Tailscale or `100.x.x.x` addresses.
-- IPv6 matching is not implemented yet.
+- Exact IPv4/IPv6 addresses and IPv4/IPv6 CIDR ranges are supported. Scoped
+  link-local IPv6 addresses such as `fe80::1%eth0` are accepted. It is not
+  limited to Tailscale or `100.x.x.x` addresses.
 - Multi-IP matching is emitted as one OpenSSH criteria value:
   `Match Address ip1,ip2`.
 - The managed SSHD block is appended to the end of `sshd_config` because

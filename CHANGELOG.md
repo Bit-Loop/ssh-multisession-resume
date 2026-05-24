@@ -23,6 +23,12 @@
   in new panes.
 - AUR package promotes `tmux` and `screen` from `optdepends` to hard `depends`,
   so the install is immediately usable.
+- IPv6 support: `detect-current`, `apply --ip/--ips`, CIDR validation, and
+  `add-current` now accept IPv6 source addresses alongside IPv4, including
+  scoped link-local addresses such as `fe80::1%eth0`.
+- Docker verification now builds and installs the local package with
+  `makepkg --syncdeps --install` to prove `tmux` and `screen` arrive through
+  package dependency resolution.
 - Code-quality pass:
   - EXIT/INT/TERM/HUP traps added to seven `mktemp` sites in client/server
     install scripts so a signaled abort no longer strands `/tmp` files.
@@ -33,11 +39,11 @@
   - `policy show` tolerates `SIGPIPE` (`policy show | head` no longer crashes
     the CLI under `set -euo pipefail`).
 - Full TDD suite (`tests/smoke.sh`) rebuilt around a small `tests/lib.sh`
-  harness: 55 named test cases covering sanitization, source-IP extraction,
+  harness: 59 named test cases covering sanitization, source-IP extraction,
   runtime-dir resolution, slot allocation (multi, single, reserved, exhausted),
   lock recovery + retry tuning, screen-state parsing, choice IO with garbage
   rejection, the menu in every input mode, profile-entry static gates,
-  CLI subcommands, IPv4/CIDR/keepalive validation, idempotent apply/rollback,
+  CLI subcommands, IPv4/IPv6/CIDR/keepalive validation, idempotent apply/rollback,
   legacy root-binary apply, signal-driven temp cleanup, and PKGBUILD/SRCINFO
   invariants. `shellcheck -S warning` clean across the entire script set.
 

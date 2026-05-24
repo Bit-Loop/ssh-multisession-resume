@@ -133,6 +133,14 @@ test_source_ip_extraction() {
   ')"
   assert_eq "$result" "203.0.113.9" "SSH_CLIENT fallback"
 
+  test_case "source-ip: IPv6 values are preserved before sanitization"
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    SSH_CONNECTION="2001:db8::7 55555 2001:db8::1 22"
+    _ssh_auto_resume_source
+  ')"
+  assert_eq "$result" "2001:db8::7" "SSH_CONNECTION IPv6"
+
   test_case "source-ip: unknown when neither var set"
   result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
     . "$AUTO_RESUME"
@@ -703,8 +711,17 @@ test_cli_detect_current_extracts_ip() {
   result="$(env -u SSH_CONNECTION SSH_CLIENT='203.0.113.8 55555 22' "$SERVER_INSTALL" detect-current)"
   assert_eq "$result" "203.0.113.8" "SSH_CLIENT fallback"
 
+  result="$(env -u SSH_CLIENT SSH_CONNECTION='2001:db8::7 55555 2001:db8::1 22' "$SERVER_INSTALL" detect-current)"
+  assert_eq "$result" "2001:db8::7" "SSH_CONNECTION IPv6 path"
+
+  result="$(env -u SSH_CONNECTION SSH_CLIENT='fe80::1 55555 22' "$SERVER_INSTALL" detect-current)"
+  assert_eq "$result" "fe80::1" "SSH_CLIENT IPv6 fallback"
+
+  result="$(env -u SSH_CLIENT SSH_CONNECTION='fe80::1%eth0 55555 fe80::2%eth0 22' "$SERVER_INSTALL" detect-current)"
+  assert_eq "$result" "fe80::1%eth0" "SSH_CONNECTION scoped IPv6 path"
+
   expect_failure env -u SSH_CLIENT SSH_CONNECTION='999.0.0.1 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
-  expect_failure env -u SSH_CLIENT SSH_CONNECTION='2001:db8::1 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
+  expect_failure env -u SSH_CLIENT SSH_CONNECTION='2001:db8::1::2 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
 }
 
 # ============================================================
@@ -751,14 +768,33 @@ test_server_validate_ipv4_accepts_canonical() {
   done
 }
 
+test_server_validate_ipv6_accepts_canonical() {
+  test_case "server: validate accepts canonical IPv6 / CIDR"
+  local conf
+  conf="$(mktemp_d_in_tests)/sshd_config"
+  printf 'Port 22\n' > "$conf"
+  local ip
+  for ip in "::1" "::" "2001:db8::1" "2001:db8:0:0:0:0:2:1" \
+            "2001:db8::/64" "::/0" "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128" \
+            "::ffff:192.0.2.128" "fe80::1%eth0" "fe80::1%eth0/128" \
+            "fe80::/64%eth0"; do
+    expect_success env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+                     SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip "$ip"
+  done
+}
+
 test_server_validate_rejects_bad_addresses() {
-  test_case "server: validate rejects malformed IPv4 / CIDR / whitespace"
+  test_case "server: validate rejects malformed IP / CIDR / whitespace"
   local conf
   conf="$(mktemp_d_in_tests)/sshd_config"
   printf 'Port 22\n' > "$conf"
   local ip
   for ip in "" "1.2.3" "1.2.3.4.5" "1.2.3.a" "256.0.0.1" "999999999999999.1.1.1" \
-            "1.2.3.4/33" "1.2.3.4/-1" "1.2.3.4/999999999"; do
+            "1.2.3.4/33" "1.2.3.4/-1" "1.2.3.4/999999999" \
+            ":" "2001:db8::1::2" "2001:db8:::1" "2001:db8::g" \
+            "1:2:3:4:5:6:7:8:9" "2001:db8::1/129" "2001:db8::1/-1" \
+            "2001:db8::1/999999999" "fe80::1%" "fe80::1%eth0!" \
+            "fe80::1%eth0%again" "192.0.2.1%eth0"; do
     expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
                      SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip "$ip"
   done
@@ -795,6 +831,17 @@ test_server_apply_writes_block() {
   assert_no_grep 'TCPKeepAlive' "$conf"
 }
 
+test_server_apply_writes_ipv6_block() {
+  test_case "server: apply emits IPv6 Match Address"
+  local conf
+  conf="$(mktemp_d_in_tests)/sshd_config"
+  printf 'Port 22\n' > "$conf"
+  expect_success env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips '2001:db8::7,::1,fe80::1%eth0'
+  assert_grep '^Match Address 2001:db8::7,::1,fe80::1%eth0$' "$conf"
+  assert_grep '^    SetEnv SSH_AUTO_RESUME=1$' "$conf"
+}
+
 test_server_apply_then_add_current_deduplicates() {
   test_case "server: add-current is idempotent on duplicate IPs"
   local conf
@@ -810,6 +857,22 @@ test_server_apply_then_add_current_deduplicates() {
   local count
   count="$(grep -c '^Match Address 1\.2\.3\.4$' "$conf")"
   assert_eq "$count" "1" "duplicate add-current did not duplicate the match line"
+}
+
+test_server_apply_then_add_current_deduplicates_ipv6() {
+  test_case "server: add-current is idempotent on duplicate IPv6 addresses"
+  local conf
+  conf="$(mktemp_d_in_tests)/sshd_config"
+  printf 'Port 22\n' > "$conf"
+  env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$SERVER_INSTALL" apply --ip 2001:db8::7 >/dev/null
+  env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$SERVER_INSTALL" add-current --ip 2001:db8::7 >/dev/null
+  env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+    "$SERVER_INSTALL" add-current --ip 2001:db8::7 >/dev/null
+  local count
+  count="$(grep -c '^Match Address 2001:db8::7$' "$conf")"
+  assert_eq "$count" "1" "duplicate IPv6 add-current did not duplicate the match line"
 }
 
 test_server_rollback_restores_or_strips() {
@@ -1034,10 +1097,13 @@ main() {
   test_mode_env_override_precedence
 
   test_server_validate_ipv4_accepts_canonical
+  test_server_validate_ipv6_accepts_canonical
   test_server_validate_rejects_bad_addresses
   test_server_keepalive_bounds
   test_server_apply_writes_block
+  test_server_apply_writes_ipv6_block
   test_server_apply_then_add_current_deduplicates
+  test_server_apply_then_add_current_deduplicates_ipv6
   test_server_rollback_restores_or_strips
 
   test_client_apply_and_rollback_idempotent
