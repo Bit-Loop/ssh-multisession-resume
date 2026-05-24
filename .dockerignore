@@ -1,0 +1,37 @@
+# Don't ship local-only state into the container build context.
+.git/
+.aur/
+.agents/
+.codex/
+
+# Build outputs (the makepkg ones land at the repo root by default).
+# Avoid bare `ssh-multisession-resume*` patterns: they collide with the
+# same-named bash script. The pkg/ and src/ directories are makepkg's
+# working dirs and are the only generated paths we actually need to drop.
+pkg/
+src/
+*.pkg.tar.*
+*.pkg.tar.*.sig
+*.tar
+*.tar.gz
+*.tgz
+*.zst
+*.zip
+
+# Container's own outputs (we don't want previous logs in the image).
+docker/output/
+docker/.cache/
+docker/*.log
+
+# Editor + misc noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Secrets — out of an abundance of caution.
+.env
+.env.*
+PRIVATE.MD

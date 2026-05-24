@@ -35,6 +35,12 @@ temp/
 coverage/
 .coverage
 
+# Container build artifacts (Dockerfile + run scripts are tracked; logs/state
+# from running them locally are not).
+docker/output/
+docker/.cache/
+docker/*.log
+
 # Python helper/test cache if local tooling is added
 __pycache__/
 *.py[cod]
