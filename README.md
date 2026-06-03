@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![AUR](https://img.shields.io/aur/version/ssh-multisession-resume-git?label=AUR)](https://aur.archlinux.org/packages/ssh-multisession-resume-git)
-[![Packages](https://img.shields.io/badge/packages-arch%20%7C%20deb%20%7C%20rpm%20%7C%20apk-success.svg)](#release-assets)
+[![Packages](https://img.shields.io/badge/packages-arch%20%7C%20deb%20%7C%20rpm%20%7C%20apk-success.svg)](#release-packages)
 
 ```text
       ssh drops
@@ -61,19 +61,22 @@ ssh-multisession-resume policy move OLD_IP NEW_IP
 ssh-multisession-resume opt-out
 ```
 
-## Release Assets
+## Release Packages
 
 ```bash
 ./run.sh package
 ```
 
-Attach all package families to the release:
+Attach all built artifacts to the release:
 
-| Family | Asset |
+| Tested distro | Release asset |
 | --- | --- |
-| Arch / pacman | `ssh-multisession-resume-git-<version>-any.pkg.tar.zst` |
-| Debian / Ubuntu | `ssh-multisession-resume_<version>_all.deb` |
-| Fedora / openSUSE / RHEL-family | `ssh-multisession-resume-<version>.noarch.rpm` |
+| Arch | `ssh-multisession-resume-git-<version>-any.pkg.tar.zst` |
+| Debian | `ssh-multisession-resume_<version>_all.deb` |
+| Ubuntu | `ssh-multisession-resume_<version>_all.deb` |
+| Fedora | `ssh-multisession-resume-<version>.noarch.rpm` |
+| openSUSE | `ssh-multisession-resume-<version>.noarch.rpm` |
+| yum / Amazon Linux | `ssh-multisession-resume-<version>.noarch.rpm` |
 | Alpine | `ssh-multisession-resume-<version>.noarch.apk` |
 
 All artifacts are architecture-independent: `any`, `all`, or `noarch`.
