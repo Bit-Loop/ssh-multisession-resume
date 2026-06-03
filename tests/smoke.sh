@@ -1177,8 +1177,9 @@ test_package_builder_supports_expected_formats() {
 
 test_package_builder_uses_git_pkgver_when_available() {
   test_case "packaging: package builder defaults to Git-derived pkgver"
-  assert_grep 'git -C "\$ROOT_DIR" rev-list --count HEAD' "$PACKAGE_BUILD"
-  assert_grep 'git -C "\$ROOT_DIR" rev-parse --short=7 HEAD' "$PACKAGE_BUILD"
+  assert_grep 'safe.directory=\${ROOT_DIR}' "$PACKAGE_BUILD"
+  assert_grep 'repo_git rev-list --count HEAD' "$PACKAGE_BUILD"
+  assert_grep 'repo_git rev-parse --short=7 HEAD' "$PACKAGE_BUILD"
 }
 
 # ============================================================
