@@ -15,7 +15,7 @@ payload_install() {
 
 payload_library_files() {
   cat <<'EOF'
-755 ssh-multisession-resume ssh-multisession-resume
+755 bin/ssh-multisession-resume ssh-multisession-resume
 755 runtime/install.sh runtime/install.sh
 644 runtime/auto-resume.sh runtime/auto-resume.sh
 644 runtime/auto-screen.sh runtime/auto-screen.sh

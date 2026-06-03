@@ -266,8 +266,6 @@ build_arch() {
     printf "  printf '%%s\\\\n' '%s'\n" "$PKG_VERSION"
     printf '}\n'
   } >> "${work}/PKGBUILD"
-  cp "${ROOT_DIR}/${PKG_NAME}.install" "$work/"
-
   runner=(makepkg --syncdeps --noconfirm --needed --force)
   if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
     if ! id builder >/dev/null 2>&1; then

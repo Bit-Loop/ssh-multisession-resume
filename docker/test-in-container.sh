@@ -102,7 +102,6 @@ build_and_install_local_package() {
     printf "  printf '%%s\\\\n' '%s'\n" "$current_pkgver"
     printf '}\n'
   } >> "${build_dir}/PKGBUILD"
-  cp /work/ssh-multisession-resume.install "$build_dir/"
   chown -R builder:builder "$build_dir"
 
   if (cd "$build_dir" && sudo -u builder makepkg --syncdeps --install --noconfirm --needed); then

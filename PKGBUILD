@@ -15,7 +15,6 @@ checkdepends=('tmux' 'screen')
 optdepends=(
   'sudo: allow non-root installer runs to apply SSHD changes'
 )
-install=${_pkgname}.install
 provides=("${_pkgname}")
 conflicts=("${_pkgname}")
 source=("${_srcname}::git+https://github.com/Bit-Loop/${_pkgname}.git")

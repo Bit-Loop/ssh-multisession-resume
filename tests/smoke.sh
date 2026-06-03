@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # shellcheck source=tests/lib.sh
 . "${ROOT_DIR}/tests/lib.sh"
 
-ROOT_INSTALL="${ROOT_DIR}/ssh-multisession-resume"
+ROOT_INSTALL="${ROOT_DIR}/bin/ssh-multisession-resume"
 RUN_SH="${ROOT_DIR}/run.sh"
 SSHD_MATCH_INSTALL="${ROOT_DIR}/sshd/match-install.sh"
 RUNTIME_INSTALL="${ROOT_DIR}/runtime/install.sh"
@@ -18,7 +18,6 @@ PROFILE_ENTRY="${ROOT_DIR}/runtime/profile-entry.sh"
 TMUX_CONF="${ROOT_DIR}/runtime/tmux-auto-resume.conf"
 SCREENRC="${ROOT_DIR}/runtime/screen-auto-resume.screenrc"
 LEGACY_SCREENRC="${ROOT_DIR}/runtime/screen-hangup-off.screenrc"
-ALPM_INSTALL="${ROOT_DIR}/ssh-multisession-resume.install"
 PKGBUILD="${ROOT_DIR}/PKGBUILD"
 SRCINFO="${ROOT_DIR}/.SRCINFO"
 PACKAGE_BUILD="${ROOT_DIR}/packaging/build-packages.sh"
@@ -42,7 +41,7 @@ test_required_files() {
   local f
   for f in "$ROOT_INSTALL" "$RUN_SH" "$SSHD_MATCH_INSTALL" "$RUNTIME_INSTALL" "$AUTO_RESUME" \
            "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$TMUX_CONF" "$SCREENRC" \
-           "$LEGACY_SCREENRC" "$ALPM_INSTALL" "$PKGBUILD" "$SRCINFO" "$PACKAGE_BUILD" \
+           "$LEGACY_SCREENRC" "$PKGBUILD" "$SRCINFO" "$PACKAGE_BUILD" \
            "$PAYLOAD" "$DOCKER_MATRIX"; do
     assert_file_exists "$f"
   done
@@ -52,7 +51,7 @@ test_bash_syntax() {
   test_case "syntax: bash -n on every bash script"
   local f
   for f in "$ROOT_INSTALL" "$RUN_SH" "$SSHD_MATCH_INSTALL" "$RUNTIME_INSTALL" "$AUTO_RESUME" \
-           "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$ALPM_INSTALL" "$PACKAGE_BUILD" \
+           "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$PACKAGE_BUILD" \
            "$PAYLOAD" "$DOCKER_MATRIX" "${ROOT_DIR}/tests/lib.sh" "${ROOT_DIR}/tests/smoke.sh"; do
     if ! bash -n "$f" 2>/dev/null; then
       fail "bash -n failed on $f"
@@ -621,7 +620,7 @@ test_cli_help_lists_new_commands() {
   local out
   out="$(mktemp_in_tests)"
   "$ROOT_INSTALL" --help > "$out"
-  assert_grep '^  \./ssh-multisession-resume doctor' "$out"
+  assert_grep '^  \./bin/ssh-multisession-resume doctor' "$out"
   assert_grep 'policy show' "$out"
   assert_grep 'policy set IP MODE' "$out"
   assert_grep 'policy move OLD_IP NEW_IP' "$out"
@@ -1142,6 +1141,13 @@ test_local_sshd_snippet_not_shipped() {
   assert_no_grep '01-sshd-auto-resume' "${ROOT_DIR}/README.md"
 }
 
+test_arch_install_message_script_not_shipped() {
+  test_case "packaging: Arch post-install message script is not shipped"
+  assert_file_missing "${ROOT_DIR}/ssh-multisession-resume.install"
+  assert_no_grep '^install=' "$PKGBUILD"
+  assert_no_grep '^	install = ' "$SRCINFO"
+}
+
 test_pkgbuild_install_block_matches_files() {
   test_case "packaging: every shared payload source path exists in the tree"
   local mode src rel
@@ -1270,6 +1276,7 @@ main() {
   test_pkgbuild_installs_profile_entry
   test_pkgbuild_installs_sourced_helpers_readonly
   test_local_sshd_snippet_not_shipped
+  test_arch_install_message_script_not_shipped
   test_pkgbuild_install_block_matches_files
   test_package_builder_declares_portable_architectures
   test_package_builder_supports_expected_formats

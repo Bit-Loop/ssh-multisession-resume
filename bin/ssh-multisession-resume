@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_FILE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+if [[ "$(basename "$SCRIPT_FILE_DIR")" == "bin" && -r "${SCRIPT_FILE_DIR}/../runtime/install.sh" ]]; then
+  SCRIPT_DIR="$(cd "${SCRIPT_FILE_DIR}/.." && pwd -P)"
+  SOURCE_CHECKOUT_COMMAND="./bin/ssh-multisession-resume"
+else
+  SCRIPT_DIR="$SCRIPT_FILE_DIR"
+  SOURCE_CHECKOUT_COMMAND="./ssh-multisession-resume"
+fi
 SSHD_MATCH_INSTALL="${SCRIPT_DIR}/sshd/match-install.sh"
 RUNTIME_INSTALL="${SCRIPT_DIR}/runtime/install.sh"
 PACKAGE_COMMAND="ssh-multisession-resume"
@@ -12,7 +19,7 @@ operator_command() {
   elif [[ "$SCRIPT_DIR" == "/usr/lib/${PACKAGE_COMMAND}" ]]; then
     printf '%s\n' "$PACKAGE_COMMAND"
   else
-    printf '%s\n' "./${PACKAGE_COMMAND}"
+    printf '%s\n' "$SOURCE_CHECKOUT_COMMAND"
   fi
 }
 
