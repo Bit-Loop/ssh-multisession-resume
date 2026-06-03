@@ -22,6 +22,7 @@ ALPM_INSTALL="${ROOT_DIR}/ssh-multisession-resume.install"
 PKGBUILD="${ROOT_DIR}/PKGBUILD"
 SRCINFO="${ROOT_DIR}/.SRCINFO"
 PACKAGE_BUILD="${ROOT_DIR}/packaging/build-packages.sh"
+DOCKER_RUN="${ROOT_DIR}/docker/run.sh"
 
 # Temp roots: cleaned up at end-of-run via trap.
 TEST_TMP_ROOT="$(mktemp -d)"
@@ -40,7 +41,7 @@ test_required_files() {
   local f
   for f in "$ROOT_INSTALL" "$RUN_SH" "$SERVER_INSTALL" "$CLIENT_INSTALL" "$AUTO_RESUME" \
            "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$TMUX_CONF" "$SCREENRC" \
-           "$LEGACY_SCREENRC" "$ALPM_INSTALL" "$PKGBUILD" "$SRCINFO" "$PACKAGE_BUILD"; do
+           "$LEGACY_SCREENRC" "$ALPM_INSTALL" "$PKGBUILD" "$SRCINFO" "$PACKAGE_BUILD" "$DOCKER_RUN"; do
     assert_file_exists "$f"
   done
 }
@@ -1182,6 +1183,12 @@ test_package_builder_uses_git_pkgver_when_available() {
   assert_grep 'repo_git rev-parse --short=7 HEAD' "$PACKAGE_BUILD"
 }
 
+test_docker_package_builds_install_git_for_pkgver() {
+  test_case "packaging: Docker package builds install git for pkgver"
+  assert_grep 'apt-get install -y bash dpkg git' "$DOCKER_RUN"
+  assert_grep 'dnf install -y bash git rpm-build' "$DOCKER_RUN"
+}
+
 # ============================================================
 # Run all tests
 # ============================================================
@@ -1263,6 +1270,7 @@ main() {
   test_package_builder_declares_portable_architectures
   test_package_builder_supports_expected_formats
   test_package_builder_uses_git_pkgver_when_available
+  test_docker_package_builds_install_git_for_pkgver
 
   print_summary
 }

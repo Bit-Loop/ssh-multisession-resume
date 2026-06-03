@@ -94,10 +94,10 @@ package_build_bootstrap() {
       printf '%s\n' 'pacman -Syu --noconfirm --needed bash sudo git coreutils findutils gawk grep sed tar gzip zstd shadow'
       ;;
     deb)
-      printf '%s\n' 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash dpkg coreutils findutils gawk grep sed tar gzip'
+      printf '%s\n' 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash dpkg git coreutils findutils gawk grep sed tar gzip'
       ;;
     rpm)
-      printf '%s\n' 'dnf install -y bash rpm-build coreutils findutils gawk grep sed tar gzip'
+      printf '%s\n' 'dnf install -y bash git rpm-build coreutils findutils gawk grep sed tar gzip'
       ;;
     apk)
       printf '%s\n' 'apk add --no-cache alpine-sdk bash coreutils findutils gawk grep sed tar gzip'
