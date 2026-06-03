@@ -10,19 +10,17 @@ LOG_FILE="${LOG_DIR}/$(date -u +'%Y%m%dT%H%M%SZ').log"
 usage() {
   cat <<USAGE
 Usage:
-  ./docker/run.sh package          local PKGBUILD/package test on Arch
-  ./docker/run.sh arch             source install + SSH login on Arch
-  ./docker/run.sh debian           source install + SSH login on Debian
-  ./docker/run.sh ubuntu           source install + SSH login on Ubuntu
-  ./docker/run.sh fedora           source install + SSH login on Fedora
-  ./docker/run.sh yum              source install + SSH login on yum
-  ./docker/run.sh opensuse         source install + SSH login on openSUSE
-  ./docker/run.sh alpine           source install + SSH login on Alpine
-  ./docker/run.sh all              package + all source distro tests
-  ./docker/run.sh aur              pull AUR package in vanilla Arch and SSH-test it
-  ./docker/run.sh build-package FORMAT
-                                  build package artifact: all, arch, deb, rpm, apk
-  ./docker/run.sh shell DISTRO     interactive shell in a distro test image
+  ./run.sh test:all                package + all source distro tests
+  ./run.sh test:arch               source install + SSH login on Arch
+  ./run.sh test:debian             source install + SSH login on Debian
+  ./run.sh test:ubuntu             source install + SSH login on Ubuntu
+  ./run.sh test:fedora             source install + SSH login on Fedora
+  ./run.sh test:yum                source install + SSH login on yum
+  ./run.sh test:opensuse           source install + SSH login on openSUSE
+  ./run.sh test:alpine             source install + SSH login on Alpine
+  ./run.sh test:aur                pull AUR package in vanilla Arch and SSH-test it
+  ./run.sh package                 build package artifact: all, arch, deb, rpm, apk
+  ./run.sh shell DISTRO            interactive shell in a distro test image
 
 Logs are written to ${LOG_DIR}.
 USAGE

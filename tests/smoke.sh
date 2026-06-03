@@ -10,19 +10,20 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 ROOT_INSTALL="${ROOT_DIR}/ssh-multisession-resume"
 RUN_SH="${ROOT_DIR}/run.sh"
-SERVER_INSTALL="${ROOT_DIR}/server/install.sh"
-CLIENT_INSTALL="${ROOT_DIR}/client/install.sh"
-AUTO_RESUME="${ROOT_DIR}/client/auto-resume.sh"
-LEGACY_AUTO_SCREEN="${ROOT_DIR}/client/auto-screen.sh"
-PROFILE_ENTRY="${ROOT_DIR}/client/profile-entry.sh"
-TMUX_CONF="${ROOT_DIR}/client/tmux-auto-resume.conf"
-SCREENRC="${ROOT_DIR}/client/screen-auto-resume.screenrc"
-LEGACY_SCREENRC="${ROOT_DIR}/client/screen-hangup-off.screenrc"
+SSHD_MATCH_INSTALL="${ROOT_DIR}/sshd/match-install.sh"
+RUNTIME_INSTALL="${ROOT_DIR}/runtime/install.sh"
+AUTO_RESUME="${ROOT_DIR}/runtime/auto-resume.sh"
+LEGACY_AUTO_SCREEN="${ROOT_DIR}/runtime/auto-screen.sh"
+PROFILE_ENTRY="${ROOT_DIR}/runtime/profile-entry.sh"
+TMUX_CONF="${ROOT_DIR}/runtime/tmux-auto-resume.conf"
+SCREENRC="${ROOT_DIR}/runtime/screen-auto-resume.screenrc"
+LEGACY_SCREENRC="${ROOT_DIR}/runtime/screen-hangup-off.screenrc"
 ALPM_INSTALL="${ROOT_DIR}/ssh-multisession-resume.install"
 PKGBUILD="${ROOT_DIR}/PKGBUILD"
 SRCINFO="${ROOT_DIR}/.SRCINFO"
 PACKAGE_BUILD="${ROOT_DIR}/packaging/build-packages.sh"
-DOCKER_RUN="${ROOT_DIR}/docker/run.sh"
+PAYLOAD="${ROOT_DIR}/packaging/payload.sh"
+DOCKER_MATRIX="${ROOT_DIR}/docker/matrix.sh"
 
 # Temp roots: cleaned up at end-of-run via trap.
 TEST_TMP_ROOT="$(mktemp -d)"
@@ -39,9 +40,10 @@ mktemp_d_in_tests() { mktemp -d -p "$TEST_TMP_ROOT"; }
 test_required_files() {
   test_case "files: every distributed source is present"
   local f
-  for f in "$ROOT_INSTALL" "$RUN_SH" "$SERVER_INSTALL" "$CLIENT_INSTALL" "$AUTO_RESUME" \
+  for f in "$ROOT_INSTALL" "$RUN_SH" "$SSHD_MATCH_INSTALL" "$RUNTIME_INSTALL" "$AUTO_RESUME" \
            "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$TMUX_CONF" "$SCREENRC" \
-           "$LEGACY_SCREENRC" "$ALPM_INSTALL" "$PKGBUILD" "$SRCINFO" "$PACKAGE_BUILD" "$DOCKER_RUN"; do
+           "$LEGACY_SCREENRC" "$ALPM_INSTALL" "$PKGBUILD" "$SRCINFO" "$PACKAGE_BUILD" \
+           "$PAYLOAD" "$DOCKER_MATRIX"; do
     assert_file_exists "$f"
   done
 }
@@ -49,9 +51,9 @@ test_required_files() {
 test_bash_syntax() {
   test_case "syntax: bash -n on every bash script"
   local f
-  for f in "$ROOT_INSTALL" "$RUN_SH" "$SERVER_INSTALL" "$CLIENT_INSTALL" "$AUTO_RESUME" \
+  for f in "$ROOT_INSTALL" "$RUN_SH" "$SSHD_MATCH_INSTALL" "$RUNTIME_INSTALL" "$AUTO_RESUME" \
            "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$ALPM_INSTALL" "$PACKAGE_BUILD" \
-           "${ROOT_DIR}/tests/lib.sh" "${ROOT_DIR}/tests/smoke.sh"; do
+           "$PAYLOAD" "$DOCKER_MATRIX" "${ROOT_DIR}/tests/lib.sh" "${ROOT_DIR}/tests/smoke.sh"; do
     if ! bash -n "$f" 2>/dev/null; then
       fail "bash -n failed on $f"
     fi
@@ -743,23 +745,23 @@ test_cli_unknown_action_fails() {
 test_cli_detect_current_extracts_ip() {
   test_case "cli: detect-current reads SSH_CONNECTION / SSH_CLIENT"
   local result
-  result="$(env -u SSH_CLIENT SSH_CONNECTION='198.51.100.7 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current)"
+  result="$(env -u SSH_CLIENT SSH_CONNECTION='198.51.100.7 55555 10.0.0.1 22' "$SSHD_MATCH_INSTALL" detect-current)"
   assert_eq "$result" "198.51.100.7" "SSH_CONNECTION path"
 
-  result="$(env -u SSH_CONNECTION SSH_CLIENT='203.0.113.8 55555 22' "$SERVER_INSTALL" detect-current)"
+  result="$(env -u SSH_CONNECTION SSH_CLIENT='203.0.113.8 55555 22' "$SSHD_MATCH_INSTALL" detect-current)"
   assert_eq "$result" "203.0.113.8" "SSH_CLIENT fallback"
 
-  result="$(env -u SSH_CLIENT SSH_CONNECTION='2001:db8::7 55555 2001:db8::1 22' "$SERVER_INSTALL" detect-current)"
+  result="$(env -u SSH_CLIENT SSH_CONNECTION='2001:db8::7 55555 2001:db8::1 22' "$SSHD_MATCH_INSTALL" detect-current)"
   assert_eq "$result" "2001:db8::7" "SSH_CONNECTION IPv6 path"
 
-  result="$(env -u SSH_CONNECTION SSH_CLIENT='fe80::1 55555 22' "$SERVER_INSTALL" detect-current)"
+  result="$(env -u SSH_CONNECTION SSH_CLIENT='fe80::1 55555 22' "$SSHD_MATCH_INSTALL" detect-current)"
   assert_eq "$result" "fe80::1" "SSH_CLIENT IPv6 fallback"
 
-  result="$(env -u SSH_CLIENT SSH_CONNECTION='fe80::1%eth0 55555 fe80::2%eth0 22' "$SERVER_INSTALL" detect-current)"
+  result="$(env -u SSH_CLIENT SSH_CONNECTION='fe80::1%eth0 55555 fe80::2%eth0 22' "$SSHD_MATCH_INSTALL" detect-current)"
   assert_eq "$result" "fe80::1%eth0" "SSH_CONNECTION scoped IPv6 path"
 
-  expect_failure env -u SSH_CLIENT SSH_CONNECTION='999.0.0.1 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
-  expect_failure env -u SSH_CLIENT SSH_CONNECTION='2001:db8::1::2 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
+  expect_failure env -u SSH_CLIENT SSH_CONNECTION='999.0.0.1 55555 10.0.0.1 22' "$SSHD_MATCH_INSTALL" detect-current
+  expect_failure env -u SSH_CLIENT SSH_CONNECTION='2001:db8::1::2 55555 10.0.0.1 22' "$SSHD_MATCH_INSTALL" detect-current
 }
 
 # ============================================================
@@ -767,17 +769,14 @@ test_cli_detect_current_extracts_ip() {
 # ============================================================
 
 test_run_sh_help_lists_install_and_docker_tests() {
-  test_case "run.sh: help lists install and Docker test commands"
+  test_case "run.sh: help stays short and points to install/test/package commands"
   local out
   out="$(mktemp_in_tests)"
   "$RUN_SH" --help > "$out"
-  assert_grep './run\.sh install' "$out"
-  assert_grep './run\.sh test:all' "$out"
-  assert_grep './run\.sh test:aur' "$out"
-  assert_grep './run\.sh package' "$out"
-  assert_grep './run\.sh package:deb' "$out"
-  assert_grep './run\.sh package:rpm' "$out"
-  assert_grep './run\.sh package:apk' "$out"
+  assert_grep './run\.sh \[install\|status\|rollback\|deps\]' "$out"
+  assert_grep './run\.sh test\[:all\|:aur' "$out"
+  assert_grep './run\.sh package\[:arch\|:deb\|:rpm\|:apk\]' "$out"
+  assert_grep './run\.sh shell \[distro\]' "$out"
 }
 
 test_run_sh_temp_install_and_rollback() {
@@ -797,8 +796,8 @@ test_run_sh_temp_install_and_rollback() {
 
   assert_file_exists "${prefix}/bin/ssh-multisession-resume"
   assert_file_exists "${prefix}/lib/ssh-multisession-resume/ssh-multisession-resume"
-  assert_file_exists "${prefix}/lib/ssh-multisession-resume/client/profile-entry.sh"
-  assert_file_exists "${prefix}/lib/ssh-multisession-resume/server/install.sh"
+  assert_file_exists "${prefix}/lib/ssh-multisession-resume/runtime/profile-entry.sh"
+  assert_file_exists "${prefix}/lib/ssh-multisession-resume/sshd/match-install.sh"
   assert_file_exists "${etc}/profile.d/ssh-multisession-resume.sh"
   assert_file_exists "${etc}/profile"
   assert_grep "${prefix}/lib/ssh-multisession-resume" "${etc}/profile.d/ssh-multisession-resume.sh"
@@ -845,7 +844,7 @@ test_mode_env_override_precedence() {
 }
 
 # ============================================================
-# Tier 7: server/install.sh validation
+# Tier 7: sshd/match-install.sh validation
 # ============================================================
 
 test_server_validate_ipv4_accepts_canonical() {
@@ -856,7 +855,7 @@ test_server_validate_ipv4_accepts_canonical() {
   local ip
   for ip in "0.0.0.0" "255.255.255.255" "192.168.001.010" "203.0.113.7/0" "203.0.113.7/32"; do
     expect_success env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-                     SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip "$ip"
+                     SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ip "$ip"
   done
 }
 
@@ -871,7 +870,7 @@ test_server_validate_ipv6_accepts_canonical() {
             "::ffff:192.0.2.128" "fe80::1%eth0" "fe80::1%eth0/128" \
             "fe80::/64%eth0"; do
     expect_success env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-                     SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip "$ip"
+                     SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ip "$ip"
   done
 }
 
@@ -888,12 +887,12 @@ test_server_validate_rejects_bad_addresses() {
             "2001:db8::1/999999999" "fe80::1%" "fe80::1%eth0!" \
             "fe80::1%eth0%again" "192.0.2.1%eth0"; do
     expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-                     SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip "$ip"
+                     SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ip "$ip"
   done
   expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-                   SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips '10.0.0.1,,10.0.0.2'
+                   SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ips '10.0.0.1,,10.0.0.2'
   expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-                   SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips '10.0.0.1/ 24'
+                   SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ips '10.0.0.1/ 24'
 }
 
 test_server_keepalive_bounds() {
@@ -902,13 +901,13 @@ test_server_keepalive_bounds() {
   conf="$(mktemp_d_in_tests)/sshd_config"
   printf 'Port 22\n' > "$conf"
   expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-interval 0
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ip 10.0.0.1 --keepalive-interval 0
   expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-count -1
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ip 10.0.0.1 --keepalive-count -1
   expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-count 2147483648
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ip 10.0.0.1 --keepalive-count 2147483648
   expect_failure env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 10.0.0.1 --keepalive-interval abc
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ip 10.0.0.1 --keepalive-interval abc
 }
 
 test_server_apply_writes_block() {
@@ -917,7 +916,7 @@ test_server_apply_writes_block() {
   conf="$(mktemp_d_in_tests)/sshd_config"
   printf 'Port 22\n' > "$conf"
   expect_success env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ip 100.101.137.15
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ip 100.101.137.15
   assert_grep '^Match Address 100\.101\.137\.15$' "$conf"
   assert_grep '^    SetEnv SSH_AUTO_RESUME=1$' "$conf"
   assert_no_grep 'TCPKeepAlive' "$conf"
@@ -929,7 +928,7 @@ test_server_apply_writes_ipv6_block() {
   conf="$(mktemp_d_in_tests)/sshd_config"
   printf 'Port 22\n' > "$conf"
   expect_success env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 \
-    SSH_SCREEN_KILL_NO_RELOAD=1 "$SERVER_INSTALL" apply --ips '2001:db8::7,::1,fe80::1%eth0'
+    SSH_SCREEN_KILL_NO_RELOAD=1 "$SSHD_MATCH_INSTALL" apply --ips '2001:db8::7,::1,fe80::1%eth0'
   assert_grep '^Match Address 2001:db8::7,::1,fe80::1%eth0$' "$conf"
   assert_grep '^    SetEnv SSH_AUTO_RESUME=1$' "$conf"
 }
@@ -940,11 +939,11 @@ test_server_apply_then_add_current_deduplicates() {
   conf="$(mktemp_d_in_tests)/sshd_config"
   printf 'Port 22\n' > "$conf"
   env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-    "$SERVER_INSTALL" apply --ip 1.2.3.4 >/dev/null
+    "$SSHD_MATCH_INSTALL" apply --ip 1.2.3.4 >/dev/null
   env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-    "$SERVER_INSTALL" add-current --ip 1.2.3.4 >/dev/null
+    "$SSHD_MATCH_INSTALL" add-current --ip 1.2.3.4 >/dev/null
   env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-    "$SERVER_INSTALL" add-current --ip 1.2.3.4 >/dev/null
+    "$SSHD_MATCH_INSTALL" add-current --ip 1.2.3.4 >/dev/null
   # Should still be a single IP, not duplicated.
   local count
   count="$(grep -c '^Match Address 1\.2\.3\.4$' "$conf")"
@@ -957,11 +956,11 @@ test_server_apply_then_add_current_deduplicates_ipv6() {
   conf="$(mktemp_d_in_tests)/sshd_config"
   printf 'Port 22\n' > "$conf"
   env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-    "$SERVER_INSTALL" apply --ip 2001:db8::7 >/dev/null
+    "$SSHD_MATCH_INSTALL" apply --ip 2001:db8::7 >/dev/null
   env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-    "$SERVER_INSTALL" add-current --ip 2001:db8::7 >/dev/null
+    "$SSHD_MATCH_INSTALL" add-current --ip 2001:db8::7 >/dev/null
   env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-    "$SERVER_INSTALL" add-current --ip 2001:db8::7 >/dev/null
+    "$SSHD_MATCH_INSTALL" add-current --ip 2001:db8::7 >/dev/null
   local count
   count="$(grep -c '^Match Address 2001:db8::7$' "$conf")"
   assert_eq "$count" "1" "duplicate IPv6 add-current did not duplicate the match line"
@@ -973,24 +972,24 @@ test_server_rollback_restores_or_strips() {
   conf="$(mktemp_d_in_tests)/sshd_config"
   printf 'Port 22\n' > "$conf"
   env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-    "$SERVER_INSTALL" apply --ip 1.2.3.4 >/dev/null
+    "$SSHD_MATCH_INSTALL" apply --ip 1.2.3.4 >/dev/null
   assert_grep 'ssh-auto-resume' "$conf"
   env SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
-    "$SERVER_INSTALL" rollback >/dev/null
+    "$SSHD_MATCH_INSTALL" rollback >/dev/null
   assert_no_grep 'ssh-auto-resume' "$conf"
   assert_no_grep 'ssh-screen-disconnect-kill' "$conf"
 }
 
 # ============================================================
-# Tier 8: client/install.sh legacy apply / rollback
+# Tier 8: runtime/install.sh legacy apply / rollback
 # ============================================================
 
 test_client_apply_and_rollback_idempotent() {
   test_case "client: apply twice creates one block; rollback restores cleanly"
   local home
   home="$(mktemp_d_in_tests)"
-  HOME="$home" "$CLIENT_INSTALL" apply >/dev/null
-  HOME="$home" "$CLIENT_INSTALL" apply >/dev/null
+  HOME="$home" "$RUNTIME_INSTALL" apply >/dev/null
+  HOME="$home" "$RUNTIME_INSTALL" apply >/dev/null
 
   assert_grep 'auto-resume.sh' "${home}/.bash_profile"
   assert_grep 'auto-resume.sh' "${home}/.zshrc"
@@ -1000,7 +999,7 @@ test_client_apply_and_rollback_idempotent() {
   count="$(grep -c '^### begin ssh-auto-resume-session$' "${home}/.bash_profile")"
   assert_eq "$count" "1" "apply twice yields one block in .bash_profile"
 
-  HOME="$home" "$CLIENT_INSTALL" rollback >/dev/null
+  HOME="$home" "$RUNTIME_INSTALL" rollback >/dev/null
   assert_file_missing "${home}/.bash_profile"
   assert_file_missing "${home}/.zshrc"
 }
@@ -1010,10 +1009,10 @@ test_client_apply_preserves_existing_profile() {
   local home
   home="$(mktemp_d_in_tests)"
   printf 'export EXISTING_PROFILE_VALUE=1\n' > "${home}/.profile"
-  HOME="$home" "$CLIENT_INSTALL" apply >/dev/null
+  HOME="$home" "$RUNTIME_INSTALL" apply >/dev/null
   assert_grep 'auto-resume.sh' "${home}/.profile"
   assert_file_missing "${home}/.bash_profile"
-  HOME="$home" "$CLIENT_INSTALL" rollback >/dev/null
+  HOME="$home" "$RUNTIME_INSTALL" rollback >/dev/null
   assert_grep '^export EXISTING_PROFILE_VALUE=1$' "${home}/.profile"
   assert_no_grep 'scoped-screen-autodetach-off' "${home}/.profile"
   assert_no_grep 'ssh-auto-resume-session' "${home}/.profile"
@@ -1027,12 +1026,12 @@ test_client_service_install_unit_contents() {
   test_case "client: service-install writes the keepalive unit"
   local home
   home="$(mktemp_d_in_tests)"
-  HOME="$home" SSH_AUTO_RESUME_SKIP_SYSTEMD=1 "$CLIENT_INSTALL" service-install >/dev/null
+  HOME="$home" SSH_AUTO_RESUME_SKIP_SYSTEMD=1 "$RUNTIME_INSTALL" service-install >/dev/null
   local unit="${home}/.config/systemd/user/ssh-auto-resume.service"
   assert_file_exists "$unit"
   assert_grep 'SSH auto-resume tmux keepalive' "$unit"
   assert_grep '__ssh_auto_resume_keepalive' "$unit"
-  HOME="$home" SSH_AUTO_RESUME_SKIP_SYSTEMD=1 "$CLIENT_INSTALL" service-rollback >/dev/null
+  HOME="$home" SSH_AUTO_RESUME_SKIP_SYSTEMD=1 "$RUNTIME_INSTALL" service-rollback >/dev/null
   assert_file_missing "$unit"
 }
 
@@ -1093,7 +1092,7 @@ FAKE_HANG_SSHD
     TMPDIR="$tmpdir" PATH="${bin}:$PATH" \
       SSHD_CONFIG_FILE="${confdir}/sshd_config" \
       SSH_SCREEN_KILL_NO_RELOAD=1 \
-      "$SERVER_INSTALL" apply --ip 10.0.0.99
+      "$SSHD_MATCH_INSTALL" apply --ip 10.0.0.99
   ) >/dev/null 2>&1 &
   local pid=$!
   sleep 0.7
@@ -1119,40 +1118,45 @@ test_pkgbuild_promotes_tmux_screen_to_depends() {
 }
 
 test_pkgbuild_installs_profile_entry() {
-  test_case "packaging: PKGBUILD installs profile-entry.sh to /etc/profile.d"
-  assert_grep '/etc/profile.d/' "$PKGBUILD"
-  assert_grep 'profile-entry.sh' "$PKGBUILD"
+  test_case "packaging: shared payload installs profile-entry.sh to /etc/profile.d"
+  assert_grep 'payload_stage_package' "$PKGBUILD"
+  assert_grep '/etc/profile.d/' "$PAYLOAD"
+  assert_grep 'profile-entry.sh' "$PAYLOAD"
 }
 
 test_pkgbuild_installs_sourced_helpers_readonly() {
   test_case "packaging: sourced profile helpers install as readable files"
-  assert_grep 'install -Dm644 client/auto-resume.sh' "$PKGBUILD"
-  assert_grep 'install -Dm644 client/auto-screen.sh' "$PKGBUILD"
-  assert_grep 'install -Dm644 "\${ROOT_DIR}/client/auto-resume.sh"' "$PACKAGE_BUILD"
-  assert_grep 'install -Dm644 "\${ROOT_DIR}/client/auto-screen.sh"' "$PACKAGE_BUILD"
+  local manifest
+  manifest="$(bash "$PAYLOAD" library-files)"
+  assert_contains "$manifest" "644 runtime/auto-resume.sh runtime/auto-resume.sh" "auto-resume mode"
+  assert_contains "$manifest" "644 runtime/auto-screen.sh runtime/auto-screen.sh" "auto-screen mode"
+  assert_no_grep 'runtime/auto-resume.sh.*runtime/auto-resume.sh' "$PKGBUILD"
+  assert_no_grep 'runtime/auto-resume.sh.*runtime/auto-resume.sh' "$PACKAGE_BUILD"
 }
 
 test_local_sshd_snippet_not_shipped() {
   test_case "packaging: local SSHD example snippet is not shipped"
-  assert_file_missing "${ROOT_DIR}/server/01-sshd-auto-resume.conf"
+  assert_file_missing "${ROOT_DIR}/sshd/01-sshd-auto-resume.conf"
   assert_no_grep '01-sshd-auto-resume' "$PKGBUILD"
   assert_no_grep '01-sshd-auto-resume' "${ROOT_DIR}/docker/test-in-container.sh"
   assert_no_grep '01-sshd-auto-resume' "${ROOT_DIR}/README.md"
 }
 
 test_pkgbuild_install_block_matches_files() {
-  test_case "packaging: every install -Dm... source path exists in the tree"
-  local line src
-  while IFS= read -r line; do
-    # extract the source argument (the one without leading slash; not pkgdir/...)
-    src="$(printf '%s\n' "$line" | awk '{for(i=1;i<=NF;i++){ if($i ~ /^"\${pkgdir}/){next} if($i ~ /^install$/||$i ~ /^-D/||$i ~ /Dm/){next} if($i ~ /^"?\$/){next} print $i; exit }}')"
-    src="${src%\"}"; src="${src#\"}"
-    [[ -n "$src" ]] || continue
-    [[ "$src" == ssh-multisession-resume* || "$src" == client/* || "$src" == server/* || "$src" == tests/* || "$src" == README.md || "$src" == CHANGELOG.md || "$src" == SECURITY.md || "$src" == LICENSE ]] || continue
+  test_case "packaging: every shared payload source path exists in the tree"
+  local mode src rel
+  while read -r mode src rel; do
+    [[ -n "$mode" && -n "$src" && -n "$rel" ]] || continue
     if [[ ! -e "${ROOT_DIR}/${src}" ]]; then
-      fail "PKGBUILD references missing source: $src"
+      fail "payload references missing source: $src"
     fi
-  done < <(grep '^[[:space:]]*install -Dm' "$PKGBUILD")
+  done < <(bash "$PAYLOAD" library-files)
+
+  for src in tests/smoke.sh runtime/profile-entry.sh README.md CHANGELOG.md SECURITY.md LICENSE; do
+    if [[ ! -e "${ROOT_DIR}/${src}" ]]; then
+      fail "payload references missing package source: $src"
+    fi
+  done
 }
 
 test_package_builder_declares_portable_architectures() {
@@ -1185,8 +1189,8 @@ test_package_builder_uses_git_pkgver_when_available() {
 
 test_docker_package_builds_install_git_for_pkgver() {
   test_case "packaging: Docker package builds install git for pkgver"
-  assert_grep 'apt-get install -y bash dpkg git' "$DOCKER_RUN"
-  assert_grep 'dnf install -y bash git rpm-build' "$DOCKER_RUN"
+  assert_grep 'apt-get install -y bash dpkg git' "$DOCKER_MATRIX"
+  assert_grep 'dnf install -y bash git rpm-build' "$DOCKER_MATRIX"
 }
 
 # ============================================================

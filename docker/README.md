@@ -12,7 +12,7 @@ Docker tests cover both install paths:
 ./run.sh test:aur       # remote AUR package in vanilla Arch
 ./run.sh test:debian    # one source-install distro
 ./run.sh package        # build Arch/deb/rpm/apk artifacts into dist/
-./docker/run.sh shell debian
+./run.sh shell debian
 ```
 
 Supported source-install images:

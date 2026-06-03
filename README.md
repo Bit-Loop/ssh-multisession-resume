@@ -7,16 +7,17 @@
 [![Packages](https://img.shields.io/badge/packages-arch%20%7C%20deb%20%7C%20rpm%20%7C%20apk-success.svg)](#release-packages)
 
 ```text
-      ssh drops
-         X
-         |
-   +-----v----------------+
-   | tmux keeps it alive  |
-   +-----+----------------+
-         |
-      ssh back
-         |
-      same shell
+          *        tiny terminal room        *
+
+ phone       .----------------------------.       laptop
+  ----ssh--->|  $ ./work-that-keeps-going |<---ssh----
+             |                            |
+             |  tmux keeps the shell warm |
+             '-------------+--------------'
+                           |
+                       reconnect
+                           |
+                       same shell
 ```
 
 No client script. No iPad setup. Install on the SSH server and connect like

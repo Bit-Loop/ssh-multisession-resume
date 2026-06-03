@@ -7,6 +7,9 @@ PKG_NAME="ssh-multisession-resume"
 PKG_REL="${SSH_MULTISESSION_PACKAGE_RELEASE:-1}"
 PKG_VERSION="${SSH_MULTISESSION_PACKAGE_VERSION:-}"
 
+# shellcheck source=payload.sh
+. "${ROOT_DIR}/packaging/payload.sh"
+
 repo_git() {
   git -c "safe.directory=${ROOT_DIR}" -C "$ROOT_DIR" "$@"
 }
@@ -68,31 +71,7 @@ EOF
 stage_payload() {
   local root="$1"
   rm -rf "$root"
-
-  install -Dm755 "${ROOT_DIR}/ssh-multisession-resume" "${root}/usr/lib/${PKG_NAME}/ssh-multisession-resume"
-  install -Dm755 "${ROOT_DIR}/client/install.sh" "${root}/usr/lib/${PKG_NAME}/client/install.sh"
-  install -Dm644 "${ROOT_DIR}/client/auto-resume.sh" "${root}/usr/lib/${PKG_NAME}/client/auto-resume.sh"
-  install -Dm644 "${ROOT_DIR}/client/auto-screen.sh" "${root}/usr/lib/${PKG_NAME}/client/auto-screen.sh"
-  install -Dm644 "${ROOT_DIR}/client/tmux-auto-resume.conf" "${root}/usr/lib/${PKG_NAME}/client/tmux-auto-resume.conf"
-  install -Dm644 "${ROOT_DIR}/client/screen-auto-resume.screenrc" "${root}/usr/lib/${PKG_NAME}/client/screen-auto-resume.screenrc"
-  install -Dm644 "${ROOT_DIR}/client/screen-hangup-off.screenrc" "${root}/usr/lib/${PKG_NAME}/client/screen-hangup-off.screenrc"
-  install -Dm755 "${ROOT_DIR}/server/install.sh" "${root}/usr/lib/${PKG_NAME}/server/install.sh"
-  install -Dm755 "${ROOT_DIR}/tests/smoke.sh" "${root}/usr/share/${PKG_NAME}/tests/smoke.sh"
-
-  install -Dm644 "${ROOT_DIR}/client/profile-entry.sh" "${root}/etc/profile.d/${PKG_NAME}.sh"
-
-  install -Dm644 "${ROOT_DIR}/README.md" "${root}/usr/share/doc/${PKG_NAME}/README.md"
-  install -Dm644 "${ROOT_DIR}/CHANGELOG.md" "${root}/usr/share/doc/${PKG_NAME}/CHANGELOG.md"
-  install -Dm644 "${ROOT_DIR}/SECURITY.md" "${root}/usr/share/doc/${PKG_NAME}/SECURITY.md"
-  install -Dm644 "${ROOT_DIR}/LICENSE" "${root}/usr/share/licenses/${PKG_NAME}/LICENSE"
-
-  install -dm755 "${root}/usr/bin"
-  cat > "${root}/usr/bin/${PKG_NAME}" <<EOF
-#!/usr/bin/env bash
-export SSH_MULTISESSION_RESUME_COMMAND=${PKG_NAME}
-exec /usr/lib/${PKG_NAME}/${PKG_NAME} "\$@"
-EOF
-  chmod 755 "${root}/usr/bin/${PKG_NAME}"
+  payload_stage_package "$ROOT_DIR" "$root" "$PKG_NAME" "$PKG_NAME"
 }
 
 build_deb() {
@@ -161,27 +140,7 @@ source IP. User choices are saved under ~/.config/ssh-multisession-resume.
 
 %install
 rm -rf %{buildroot}
-install -Dm755 %{_sourcedir}/ssh-multisession-resume %{buildroot}/usr/lib/${PKG_NAME}/ssh-multisession-resume
-install -Dm755 %{_sourcedir}/client/install.sh %{buildroot}/usr/lib/${PKG_NAME}/client/install.sh
-install -Dm644 %{_sourcedir}/client/auto-resume.sh %{buildroot}/usr/lib/${PKG_NAME}/client/auto-resume.sh
-install -Dm644 %{_sourcedir}/client/auto-screen.sh %{buildroot}/usr/lib/${PKG_NAME}/client/auto-screen.sh
-install -Dm644 %{_sourcedir}/client/tmux-auto-resume.conf %{buildroot}/usr/lib/${PKG_NAME}/client/tmux-auto-resume.conf
-install -Dm644 %{_sourcedir}/client/screen-auto-resume.screenrc %{buildroot}/usr/lib/${PKG_NAME}/client/screen-auto-resume.screenrc
-install -Dm644 %{_sourcedir}/client/screen-hangup-off.screenrc %{buildroot}/usr/lib/${PKG_NAME}/client/screen-hangup-off.screenrc
-install -Dm755 %{_sourcedir}/server/install.sh %{buildroot}/usr/lib/${PKG_NAME}/server/install.sh
-install -Dm755 %{_sourcedir}/tests/smoke.sh %{buildroot}/usr/share/${PKG_NAME}/tests/smoke.sh
-install -Dm644 %{_sourcedir}/client/profile-entry.sh %{buildroot}/etc/profile.d/${PKG_NAME}.sh
-install -Dm644 %{_sourcedir}/README.md %{buildroot}/usr/share/doc/${PKG_NAME}/README.md
-install -Dm644 %{_sourcedir}/CHANGELOG.md %{buildroot}/usr/share/doc/${PKG_NAME}/CHANGELOG.md
-install -Dm644 %{_sourcedir}/SECURITY.md %{buildroot}/usr/share/doc/${PKG_NAME}/SECURITY.md
-install -Dm644 %{_sourcedir}/LICENSE %{buildroot}/usr/share/licenses/${PKG_NAME}/LICENSE
-install -dm755 %{buildroot}/usr/bin
-cat > %{buildroot}/usr/bin/${PKG_NAME} <<'WRAPPER'
-#!/usr/bin/env bash
-export SSH_MULTISESSION_RESUME_COMMAND=${PKG_NAME}
-exec /usr/lib/${PKG_NAME}/${PKG_NAME} "\$@"
-WRAPPER
-chmod 755 %{buildroot}/usr/bin/${PKG_NAME}
+bash %{_sourcedir}/packaging/payload.sh stage-package %{_sourcedir} %{buildroot} ${PKG_NAME} ${PKG_NAME}
 
 %post
 cat <<'POST'
@@ -251,27 +210,7 @@ builddir="\$srcdir/${PKG_NAME}-${apk_version}"
 options="!check"
 
 package() {
-  install -Dm755 "\$builddir/ssh-multisession-resume" "\$pkgdir/usr/lib/${PKG_NAME}/ssh-multisession-resume"
-  install -Dm755 "\$builddir/client/install.sh" "\$pkgdir/usr/lib/${PKG_NAME}/client/install.sh"
-  install -Dm644 "\$builddir/client/auto-resume.sh" "\$pkgdir/usr/lib/${PKG_NAME}/client/auto-resume.sh"
-  install -Dm644 "\$builddir/client/auto-screen.sh" "\$pkgdir/usr/lib/${PKG_NAME}/client/auto-screen.sh"
-  install -Dm644 "\$builddir/client/tmux-auto-resume.conf" "\$pkgdir/usr/lib/${PKG_NAME}/client/tmux-auto-resume.conf"
-  install -Dm644 "\$builddir/client/screen-auto-resume.screenrc" "\$pkgdir/usr/lib/${PKG_NAME}/client/screen-auto-resume.screenrc"
-  install -Dm644 "\$builddir/client/screen-hangup-off.screenrc" "\$pkgdir/usr/lib/${PKG_NAME}/client/screen-hangup-off.screenrc"
-  install -Dm755 "\$builddir/server/install.sh" "\$pkgdir/usr/lib/${PKG_NAME}/server/install.sh"
-  install -Dm755 "\$builddir/tests/smoke.sh" "\$pkgdir/usr/share/${PKG_NAME}/tests/smoke.sh"
-  install -Dm644 "\$builddir/client/profile-entry.sh" "\$pkgdir/etc/profile.d/${PKG_NAME}.sh"
-  install -Dm644 "\$builddir/README.md" "\$pkgdir/usr/share/doc/${PKG_NAME}/README.md"
-  install -Dm644 "\$builddir/CHANGELOG.md" "\$pkgdir/usr/share/doc/${PKG_NAME}/CHANGELOG.md"
-  install -Dm644 "\$builddir/SECURITY.md" "\$pkgdir/usr/share/doc/${PKG_NAME}/SECURITY.md"
-  install -Dm644 "\$builddir/LICENSE" "\$pkgdir/usr/share/licenses/${PKG_NAME}/LICENSE"
-  install -dm755 "\$pkgdir/usr/bin"
-  cat > "\$pkgdir/usr/bin/${PKG_NAME}" <<'WRAPPER'
-#!/usr/bin/env bash
-export SSH_MULTISESSION_RESUME_COMMAND=${PKG_NAME}
-exec /usr/lib/${PKG_NAME}/${PKG_NAME} "\$@"
-WRAPPER
-  chmod 755 "\$pkgdir/usr/bin/${PKG_NAME}"
+  bash "\$builddir/packaging/payload.sh" stage-package "\$builddir" "\$pkgdir" ${PKG_NAME} ${PKG_NAME}
 }
 EOF
 

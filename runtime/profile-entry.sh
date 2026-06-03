@@ -23,24 +23,34 @@ fi
 unset _ssh_multisession_resume_xdg
 
 _ssh_multisession_resume_lib="${SSH_MULTISESSION_RESUME_LIB:-}"
-if [ -z "${_ssh_multisession_resume_lib}" ]; then
-  if [ -r "/usr/local/lib/ssh-multisession-resume/client/auto-resume.sh" ]; then
-    _ssh_multisession_resume_lib="/usr/local/lib/ssh-multisession-resume"
-  else
-    _ssh_multisession_resume_lib="/usr/lib/ssh-multisession-resume"
+_ssh_multisession_resume_runtime=""
+if [ -n "${_ssh_multisession_resume_lib}" ]; then
+  if [ -r "${_ssh_multisession_resume_lib}/runtime/auto-resume.sh" ]; then
+    _ssh_multisession_resume_runtime="${_ssh_multisession_resume_lib}/runtime"
+  elif [ -r "${_ssh_multisession_resume_lib}/client/auto-resume.sh" ]; then
+    _ssh_multisession_resume_runtime="${_ssh_multisession_resume_lib}/client"
   fi
+else
+  for _ssh_multisession_resume_runtime in \
+    /usr/local/lib/ssh-multisession-resume/runtime \
+    /usr/lib/ssh-multisession-resume/runtime \
+    /usr/local/lib/ssh-multisession-resume/client \
+    /usr/lib/ssh-multisession-resume/client
+  do
+    [ -r "${_ssh_multisession_resume_runtime}/auto-resume.sh" ] && break
+  done
 fi
-if [ ! -r "${_ssh_multisession_resume_lib}/client/auto-resume.sh" ]; then
-  unset _ssh_multisession_resume_lib
+if [ ! -r "${_ssh_multisession_resume_runtime}/auto-resume.sh" ]; then
+  unset _ssh_multisession_resume_lib _ssh_multisession_resume_runtime
   return 0
 fi
 
 SSH_AUTO_RESUME=1
-SSH_AUTO_RESUME_TMUX_CONF="${_ssh_multisession_resume_lib}/client/tmux-auto-resume.conf"
-SSH_AUTO_RESUME_SCREENRC="${_ssh_multisession_resume_lib}/client/screen-auto-resume.screenrc"
+SSH_AUTO_RESUME_TMUX_CONF="${_ssh_multisession_resume_runtime}/tmux-auto-resume.conf"
+SSH_AUTO_RESUME_SCREENRC="${_ssh_multisession_resume_runtime}/screen-auto-resume.screenrc"
 SSH_AUTO_RESUME_SESSION_PREFIX="ssh-resume"
 export SSH_AUTO_RESUME SSH_AUTO_RESUME_TMUX_CONF SSH_AUTO_RESUME_SCREENRC SSH_AUTO_RESUME_SESSION_PREFIX
 
 # shellcheck source=/dev/null
-. "${_ssh_multisession_resume_lib}/client/auto-resume.sh"
-unset _ssh_multisession_resume_lib
+. "${_ssh_multisession_resume_runtime}/auto-resume.sh"
+unset _ssh_multisession_resume_lib _ssh_multisession_resume_runtime

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-SERVER_INSTALL="${SCRIPT_DIR}/server/install.sh"
-CLIENT_INSTALL="${SCRIPT_DIR}/client/install.sh"
+SSHD_MATCH_INSTALL="${SCRIPT_DIR}/sshd/match-install.sh"
+RUNTIME_INSTALL="${SCRIPT_DIR}/runtime/install.sh"
 PACKAGE_COMMAND="ssh-multisession-resume"
 
 operator_command() {
@@ -76,14 +76,14 @@ server_needs_sudo() {
 
 run_server() {
   if server_needs_sudo; then
-    sudo "$SERVER_INSTALL" "$@"
+    sudo "$SSHD_MATCH_INSTALL" "$@"
   else
-    "$SERVER_INSTALL" "$@"
+    "$SSHD_MATCH_INSTALL" "$@"
   fi
 }
 
 run_server_no_sudo() {
-  "$SERVER_INSTALL" "$@"
+  "$SSHD_MATCH_INSTALL" "$@"
 }
 
 target_client_user() {
@@ -118,9 +118,9 @@ run_client() {
   home="$(target_client_home "$user")"
 
   if [[ "$user" != "$(id -un)" ]]; then
-    sudo -u "$user" env HOME="$home" "$CLIENT_INSTALL" "$@"
+    sudo -u "$user" env HOME="$home" "$RUNTIME_INSTALL" "$@"
   else
-    HOME="$home" "$CLIENT_INSTALL" "$@"
+    HOME="$home" "$RUNTIME_INSTALL" "$@"
   fi
 }
 
@@ -212,7 +212,7 @@ prompt_self_add() {
 }
 
 detect_current_ip() {
-  "$SERVER_INSTALL" detect-current
+  "$SSHD_MATCH_INSTALL" detect-current
 }
 
 package_manager() {
@@ -350,8 +350,8 @@ maybe_offer_service_install() {
 cmd_apply() {
   local current_ip=""
 
-  require_file "$SERVER_INSTALL"
-  require_file "$CLIENT_INSTALL"
+  require_file "$SSHD_MATCH_INSTALL"
+  require_file "$RUNTIME_INSTALL"
 
   ensure_mux_available
 
@@ -374,8 +374,8 @@ cmd_apply() {
 }
 
 cmd_status() {
-  require_file "$SERVER_INSTALL"
-  require_file "$CLIENT_INSTALL"
+  require_file "$SSHD_MATCH_INSTALL"
+  require_file "$RUNTIME_INSTALL"
 
   echo "Server:"
   run_server_no_sudo status
@@ -385,7 +385,7 @@ cmd_status() {
 }
 
 cmd_sessions() {
-  require_file "$CLIENT_INSTALL"
+  require_file "$RUNTIME_INSTALL"
 
   run_client sessions
 }
@@ -422,19 +422,19 @@ cmd_monitor() {
 }
 
 cmd_service_install() {
-  require_file "$CLIENT_INSTALL"
+  require_file "$RUNTIME_INSTALL"
 
   run_client service-install
 }
 
 cmd_service_status() {
-  require_file "$CLIENT_INSTALL"
+  require_file "$RUNTIME_INSTALL"
 
   run_client service-status
 }
 
 cmd_service_rollback() {
-  require_file "$CLIENT_INSTALL"
+  require_file "$RUNTIME_INSTALL"
 
   run_client service-rollback
 }
@@ -445,8 +445,8 @@ cmd_doctor() {
   local ok=1
   local in_managed_mux=0
 
-  require_file "$SERVER_INSTALL"
-  require_file "$CLIENT_INSTALL"
+  require_file "$SSHD_MATCH_INSTALL"
+  require_file "$RUNTIME_INSTALL"
 
   echo "Session:"
   if [[ -n "${SSH_CONNECTION:-}${SSH_CLIENT:-}${SSH_TTY:-}" ]]; then
@@ -667,8 +667,8 @@ cmd_opt_in() {
 }
 
 cmd_summary() {
-  require_file "$SERVER_INSTALL"
-  require_file "$CLIENT_INSTALL"
+  require_file "$SSHD_MATCH_INSTALL"
+  require_file "$RUNTIME_INSTALL"
 
   local hook_path="/etc/profile.d/ssh-multisession-resume.sh"
   echo "Install:"
@@ -734,8 +734,8 @@ cmd_summary() {
 }
 
 cmd_rollback() {
-  require_file "$SERVER_INSTALL"
-  require_file "$CLIENT_INSTALL"
+  require_file "$SSHD_MATCH_INSTALL"
+  require_file "$RUNTIME_INSTALL"
 
   run_server rollback
   run_client service-rollback

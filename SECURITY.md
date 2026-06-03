@@ -45,7 +45,7 @@ private hostnames, and SSH configuration that is unrelated to the issue.
 Before publishing source and AUR updates, run:
 
 ```bash
-shellcheck ssh-multisession-resume server/install.sh client/install.sh client/auto-resume.sh client/auto-screen.sh tests/smoke.sh ssh-multisession-resume.install
+shellcheck ssh-multisession-resume sshd/match-install.sh runtime/install.sh runtime/auto-resume.sh runtime/auto-screen.sh tests/smoke.sh ssh-multisession-resume.install
 shellcheck -s bash -e SC2034,SC2154 PKGBUILD
 env -u TMUX -u STY ./tests/smoke.sh
 makepkg --printsrcinfo

@@ -62,23 +62,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 install_package_files() {
-  sudo install -Dm755 ssh-multisession-resume "${LIB_DIR}/ssh-multisession-resume"
-  sudo install -Dm755 client/install.sh        "${LIB_DIR}/client/install.sh"
-  sudo install -Dm644 client/auto-resume.sh    "${LIB_DIR}/client/auto-resume.sh"
-  sudo install -Dm644 client/auto-screen.sh    "${LIB_DIR}/client/auto-screen.sh"
-  sudo install -Dm644 client/tmux-auto-resume.conf       "${LIB_DIR}/client/tmux-auto-resume.conf"
-  sudo install -Dm644 client/screen-auto-resume.screenrc "${LIB_DIR}/client/screen-auto-resume.screenrc"
-  sudo install -Dm644 client/screen-hangup-off.screenrc  "${LIB_DIR}/client/screen-hangup-off.screenrc"
-  sudo install -Dm755 server/install.sh        "${LIB_DIR}/server/install.sh"
-  sudo install -Dm644 client/profile-entry.sh  "${ETC_HOOK}"
-
-  sudo install -dm755 /usr/bin
-  sudo tee /usr/bin/ssh-multisession-resume >/dev/null <<EOF
-#!/usr/bin/env bash
-export SSH_MULTISESSION_RESUME_COMMAND=ssh-multisession-resume
-exec /usr/lib/ssh-multisession-resume/ssh-multisession-resume "\$@"
-EOF
-  sudo chmod 755 /usr/bin/ssh-multisession-resume
+  SSH_MULTISESSION_PAYLOAD_AS_ROOT=sudo \
+    bash packaging/payload.sh stage-package /work / "$PROG_NAME" "$PROG_NAME"
 }
 
 build_and_install_local_package() {
@@ -362,7 +347,7 @@ run_full_suite() {
   heading "Phase C: TDD smoke suite"
   # ------------------------------------------------------------------
   # Now that tmux/screen are present, the suite's apply/rollback assertions
-  # (which call `client/install.sh apply` and check ~/.bash_profile etc.)
+  # (which call `runtime/install.sh apply` and check ~/.bash_profile etc.)
   # can exercise their happy path.
   if env -u TMUX -u STY bash tests/smoke.sh; then
     ok "smoke suite"
@@ -445,7 +430,7 @@ run_full_suite() {
   # ------------------------------------------------------------------
   heading "Phase F: X11 + Wayland env-refresh pinning"
   # ------------------------------------------------------------------
-  conf="${LIB_DIR}/client/tmux-auto-resume.conf"
+  conf="${LIB_DIR}/runtime/tmux-auto-resume.conf"
   if grep -q '^set-option -g update-environment .*DISPLAY' "$conf"; then
     ok "tmux pins DISPLAY"
   else
@@ -527,7 +512,7 @@ run_full_suite() {
   # Corrupted choice file -> read_choice should reject and the menu would
   # re-prompt. For automation we just check read_choice returns non-zero.
   printf 'totally-bogus-mode\n' > "$ec_home/.config/ssh-multisession-resume/choices/c1"
-  if HOME="$ec_home" AUTO_RESUME=/work/client/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+  if HOME="$ec_home" AUTO_RESUME=/work/runtime/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
        . "$AUTO_RESUME"; _ssh_auto_resume_read_choice c1
        ' >/dev/null 2>&1; then
     fail "read_choice accepted corrupted content"
@@ -537,7 +522,7 @@ run_full_suite() {
 
   # Empty choice file.
   : > "$ec_home/.config/ssh-multisession-resume/choices/c2"
-  if HOME="$ec_home" AUTO_RESUME=/work/client/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+  if HOME="$ec_home" AUTO_RESUME=/work/runtime/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
        . "$AUTO_RESUME"; _ssh_auto_resume_read_choice c2
        ' >/dev/null 2>&1; then
     fail "read_choice accepted empty file"
@@ -547,7 +532,7 @@ run_full_suite() {
 
   # Choice file with trailing whitespace -> rejected (we want strict).
   printf 'single \n' > "$ec_home/.config/ssh-multisession-resume/choices/c3"
-  if HOME="$ec_home" AUTO_RESUME=/work/client/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+  if HOME="$ec_home" AUTO_RESUME=/work/runtime/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
        . "$AUTO_RESUME"; _ssh_auto_resume_read_choice c3
        ' >/dev/null 2>&1; then
     fail "read_choice accepted trailing-whitespace content"
@@ -557,7 +542,7 @@ run_full_suite() {
 
   # Multi-line choice file: read first line. If first line is valid, accept.
   printf 'multi\nsecond-line\n' > "$ec_home/.config/ssh-multisession-resume/choices/c4"
-  out="$(HOME="$ec_home" AUTO_RESUME=/work/client/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+  out="$(HOME="$ec_home" AUTO_RESUME=/work/runtime/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
          . "$AUTO_RESUME"; _ssh_auto_resume_read_choice c4 && printf "%s" "$_ssh_auto_resume_choice"
          ' 2>/dev/null)"
   if [[ "$out" == "multi" ]]; then
@@ -567,7 +552,7 @@ run_full_suite() {
   fi
 
   # Sanitization edge cases.
-  sanitized="$(AUTO_RESUME=/work/client/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+  sanitized="$(AUTO_RESUME=/work/runtime/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
                  . "$AUTO_RESUME"; _ssh_auto_resume_sanitize "$(printf "verylong.%.0s" {1..50})"
                  ' 2>/dev/null)"
   if [[ "${#sanitized}" -gt 0 ]] && [[ ! "$sanitized" =~ [^A-Za-z0-9_-] ]]; then
@@ -575,7 +560,7 @@ run_full_suite() {
   else
     fail "sanitize output dirty: $sanitized"
   fi
-  unicode_in="$(AUTO_RESUME=/work/client/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+  unicode_in="$(AUTO_RESUME=/work/runtime/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
                   . "$AUTO_RESUME"; _ssh_auto_resume_sanitize "192.168.X.1"
                   ' 2>/dev/null)"
   if [[ ! "$unicode_in" =~ [^A-Za-z0-9_-] ]]; then
@@ -583,7 +568,7 @@ run_full_suite() {
   else
     fail "sanitize unicode output dirty: $unicode_in"
   fi
-  empty_in="$(AUTO_RESUME=/work/client/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+  empty_in="$(AUTO_RESUME=/work/runtime/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
                 . "$AUTO_RESUME"; _ssh_auto_resume_sanitize ""
                 ' 2>/dev/null)"
   if [[ -z "$empty_in" ]]; then
@@ -608,7 +593,7 @@ run_full_suite() {
   pids=()
   for ((attempt = 1; attempt <= 5; attempt++)); do
     (
-      AUTO_RESUME=/work/client/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c "
+      AUTO_RESUME=/work/runtime/auto-resume.sh SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c "
         set +e
         . \"\$AUTO_RESUME\"
         _ssh_auto_resume_socket_name=ssh-resume-test

@@ -30,7 +30,7 @@
   `makepkg --syncdeps --install` to prove `tmux` and `screen` arrive through
   package dependency resolution.
 - Code-quality pass:
-  - EXIT/INT/TERM/HUP traps added to seven `mktemp` sites in client/server
+  - EXIT/INT/TERM/HUP traps added to seven `mktemp` sites in runtime/sshd
     install scripts so a signaled abort no longer strands `/tmp` files.
   - Misleading `_ssh_auto_resume_screen_args` flag renamed to
     `_ssh_auto_resume_has_screenrc`.

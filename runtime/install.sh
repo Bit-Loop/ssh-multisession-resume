@@ -16,7 +16,7 @@ SNAP_EXT=".screen-hangup-snapshot"
 CREATED_EXT=".screen-hangup-created"
 
 usage() {
-  local cmd="${0:-./client/install.sh}"
+  local cmd="${0:-./runtime/install.sh}"
 
   cat <<USAGE
 Usage:

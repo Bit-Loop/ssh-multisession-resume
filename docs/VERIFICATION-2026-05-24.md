@@ -3,7 +3,7 @@
 **Date:** 2026-05-24
 **Commit under test:** local release candidate working tree
 **Test target:** zero-touch SSH session resume + per-IP single/multi/skip menu
-**Tester:** automated suite via `docker/run.sh`
+**Tester:** automated suite via `./run.sh`
 
 ---
 
@@ -43,12 +43,12 @@ This run verifies, against a clean Arch container:
 
 Two-tier verification:
 
-- **Tier 1** — single-container run (`./docker/run.sh test`)
+- **Tier 1** — single-container run (`./run.sh test:all`)
   Runs 10 phases (A–J) covering install, package dependency resolution, the
   59-case TDD smoke suite, zero-touch gate behavior, CLI surface, env pinning,
   resource leaks, edge cases, concurrent races, and state preparation
   for tier 2.
-- **Tier 2** — two-container persistence (`./docker/run.sh persistence`)
+- **Tier 2** — two-container persistence (`./run.sh test:all`)
   Container A: install package files, save policies into the mounted
   volume. Container A exits. Container B: re-install package files
   (system files don't persist; they're re-laid in `/usr/`), then check
@@ -128,7 +128,7 @@ Tier 2 total: 6 passed, 0 failed
 
 ### No session leaks (X11 / Wayland / SSH agent)
 
-`client/tmux-auto-resume.conf` pins the `update-environment` list to
+`runtime/tmux-auto-resume.conf` pins the `update-environment` list to
 `DISPLAY KRB5CCNAME MSYSTEM SSH_ASKPASS SSH_AUTH_SOCK SSH_AGENT_PID
 SSH_CONNECTION WAYLAND_DISPLAY WINDOWID XAUTHORITY`, so on every client
 reattach tmux refreshes those values from the new client environment.
@@ -190,8 +190,8 @@ needs to be redone after a reboot.
 ```bash
 git clone https://github.com/Bit-Loop/ssh-multisession-resume.git
 cd ssh-multisession-resume
-./docker/run.sh                # tier 1, builds image then runs
-./docker/run.sh persistence    # tier 2, two-container volume run
+./run.sh test:all              # distro matrix
+./run.sh test:aur              # public AUR install
 ```
 
 Per-run logs land in `docker/output/<UTC-timestamp>.log` (gitignored).
