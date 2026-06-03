@@ -59,6 +59,7 @@ payload_stage_package() {
   payload_install 755 "${source_root}/tests/smoke.sh" "${dest_root}/usr/share/${pkg_name}/tests/smoke.sh"
   payload_install 644 "${source_root}/runtime/profile-entry.sh" "${dest_root}/etc/profile.d/${pkg_name}.sh"
   payload_install 644 "${source_root}/README.md" "${dest_root}/usr/share/doc/${doc_name}/README.md"
+  payload_install 644 "${source_root}/assets/capybara-terminal.png" "${dest_root}/usr/share/doc/${doc_name}/assets/capybara-terminal.png"
   payload_install 644 "${source_root}/CHANGELOG.md" "${dest_root}/usr/share/doc/${doc_name}/CHANGELOG.md"
   payload_install 644 "${source_root}/SECURITY.md" "${dest_root}/usr/share/doc/${doc_name}/SECURITY.md"
   payload_install 644 "${source_root}/LICENSE" "${dest_root}/usr/share/licenses/${doc_name}/LICENSE"

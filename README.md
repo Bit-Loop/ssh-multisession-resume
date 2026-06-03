@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/capybara-terminal.png" alt="Pixel art capybara using a green terminal" width="860">
+</p>
+
 # SSH Multisession Resume
 
 **Server-side SSH auto-resume. Install once, reconnect from anything.**
@@ -5,20 +9,6 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![AUR](https://img.shields.io/aur/version/ssh-multisession-resume-git?label=AUR)](https://aur.archlinux.org/packages/ssh-multisession-resume-git)
 [![Packages](https://img.shields.io/badge/packages-arch%20%7C%20deb%20%7C%20rpm%20%7C%20apk-success.svg)](#release-packages)
-
-```text
-          *        tiny terminal room        *
-
- phone       .----------------------------.       laptop
-  ----ssh--->|  $ ./work-that-keeps-going |<---ssh----
-             |                            |
-             |  tmux keeps the shell warm |
-             '-------------+--------------'
-                           |
-                       reconnect
-                           |
-                       same shell
-```
 
 No client script. No iPad setup. Install on the SSH server and connect like
 normal.

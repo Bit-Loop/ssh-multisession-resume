@@ -23,6 +23,7 @@ SRCINFO="${ROOT_DIR}/.SRCINFO"
 PACKAGE_BUILD="${ROOT_DIR}/packaging/build-packages.sh"
 PAYLOAD="${ROOT_DIR}/packaging/payload.sh"
 DOCKER_MATRIX="${ROOT_DIR}/docker/matrix.sh"
+README_ART="${ROOT_DIR}/assets/capybara-terminal.png"
 
 # Temp roots: cleaned up at end-of-run via trap.
 TEST_TMP_ROOT="$(mktemp -d)"
@@ -42,7 +43,7 @@ test_required_files() {
   for f in "$ROOT_INSTALL" "$RUN_SH" "$SSHD_MATCH_INSTALL" "$RUNTIME_INSTALL" "$AUTO_RESUME" \
            "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$TMUX_CONF" "$SCREENRC" \
            "$LEGACY_SCREENRC" "$PKGBUILD" "$SRCINFO" "$PACKAGE_BUILD" \
-           "$PAYLOAD" "$DOCKER_MATRIX"; do
+           "$PAYLOAD" "$DOCKER_MATRIX" "$README_ART"; do
     assert_file_exists "$f"
   done
 }
@@ -778,6 +779,13 @@ test_run_sh_help_lists_install_and_docker_tests() {
   assert_grep './run\.sh shell \[distro\]' "$out"
 }
 
+test_readme_uses_capybara_header() {
+  test_case "README: capybara terminal image is the heading art"
+  assert_grep '^<p align="center">' "${ROOT_DIR}/README.md"
+  assert_grep 'assets/capybara-terminal.png' "${ROOT_DIR}/README.md"
+  assert_file_exists "$README_ART"
+}
+
 test_run_sh_temp_install_and_rollback() {
   test_case "run.sh: source install and rollback work under temp roots"
   local root prefix etc out
@@ -1158,7 +1166,7 @@ test_pkgbuild_install_block_matches_files() {
     fi
   done < <(bash "$PAYLOAD" library-files)
 
-  for src in tests/smoke.sh runtime/profile-entry.sh README.md CHANGELOG.md SECURITY.md LICENSE; do
+  for src in tests/smoke.sh runtime/profile-entry.sh README.md assets/capybara-terminal.png CHANGELOG.md SECURITY.md LICENSE; do
     if [[ ! -e "${ROOT_DIR}/${src}" ]]; then
       fail "payload references missing package source: $src"
     fi
@@ -1249,6 +1257,7 @@ main() {
   test_cli_detect_current_extracts_ip
 
   test_run_sh_help_lists_install_and_docker_tests
+  test_readme_uses_capybara_header
   test_run_sh_temp_install_and_rollback
 
   test_mode_env_override_precedence
