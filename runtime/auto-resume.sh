@@ -108,6 +108,44 @@ _ssh_auto_resume_main() {
     tmux -L "$_ssh_auto_resume_socket_name" display-message -p -t "$1" '#{session_attached}' 2>/dev/null || printf '%s\n' 0
   }
 
+  _ssh_auto_resume_has_term_checker() {
+    command -v infocmp >/dev/null 2>&1 || command -v tput >/dev/null 2>&1
+  }
+
+  _ssh_auto_resume_term_usable() {
+    [ -n "${1:-}" ] && [ "$1" != "dumb" ] || return 1
+
+    if command -v infocmp >/dev/null 2>&1; then
+      infocmp "$1" >/dev/null 2>&1
+      return $?
+    fi
+
+    if command -v tput >/dev/null 2>&1; then
+      TERM="$1" tput cols >/dev/null 2>&1
+      return $?
+    fi
+
+    return 0
+  }
+
+  _ssh_auto_resume_prepare_term() {
+    if _ssh_auto_resume_term_usable "${TERM:-}"; then
+      return 0
+    fi
+
+    _ssh_auto_resume_has_term_checker || return 0
+
+    for _ssh_auto_resume_fallback_term in xterm-256color xterm vt100; do
+      if _ssh_auto_resume_term_usable "$_ssh_auto_resume_fallback_term"; then
+        TERM="$_ssh_auto_resume_fallback_term"
+        export TERM
+        return 0
+      fi
+    done
+
+    return 0
+  }
+
   _ssh_auto_resume_select_tmux() {
     if [ "${_ssh_auto_resume_mode:-multi}" = "single" ]; then
       _ssh_auto_resume_selected="${_ssh_auto_resume_session_base}-0"
@@ -360,6 +398,7 @@ _ssh_auto_resume_main() {
   fi
 
   mkdir -p "$_ssh_auto_resume_reservation_dir" 2>/dev/null || return 0
+  _ssh_auto_resume_prepare_term
 
   if command -v tmux >/dev/null 2>&1; then
     _ssh_auto_resume_lock || return 0
@@ -398,6 +437,9 @@ if [ "${SSH_AUTO_RESUME_KEEP_FUNCTIONS:-0}" != "1" ]; then
     _ssh_auto_resume_reserve \
     _ssh_auto_resume_cleanup \
     _ssh_auto_resume_tmux_attached \
+    _ssh_auto_resume_has_term_checker \
+    _ssh_auto_resume_term_usable \
+    _ssh_auto_resume_prepare_term \
     _ssh_auto_resume_select_tmux \
     _ssh_auto_resume_screen_state \
     _ssh_auto_resume_select_screen \

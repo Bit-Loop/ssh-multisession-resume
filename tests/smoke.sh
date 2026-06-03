@@ -205,6 +205,50 @@ test_runtime_dir_fallback_creates_tmp_subdir() {
   rm -rf "/tmp/ssh-auto-resume-${fake_uid}" 2>/dev/null || true
 }
 
+test_prepare_term_falls_back_from_missing_terminfo() {
+  test_case "term: xterm-kitty falls back when terminfo is missing"
+  local fake_bin result
+  fake_bin="$(mktemp_d_in_tests)"
+  cat > "${fake_bin}/infocmp" <<'FAKE_INFOCMP'
+#!/usr/bin/env bash
+case "${1:-}" in
+  xterm-256color|xterm|vt100) exit 0 ;;
+  *) exit 1 ;;
+esac
+FAKE_INFOCMP
+  chmod +x "${fake_bin}/infocmp"
+
+  result="$(PATH="${fake_bin}:$PATH" TERM=xterm-kitty \
+            AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_prepare_term
+    printf "%s\n" "$TERM"
+  ')"
+  assert_eq "$result" "xterm-256color" "missing xterm-kitty fallback"
+}
+
+test_prepare_term_preserves_known_terminal() {
+  test_case "term: known terminals are preserved"
+  local fake_bin result
+  fake_bin="$(mktemp_d_in_tests)"
+  cat > "${fake_bin}/infocmp" <<'FAKE_INFOCMP'
+#!/usr/bin/env bash
+case "${1:-}" in
+  xterm-256color|xterm|vt100) exit 0 ;;
+  *) exit 1 ;;
+esac
+FAKE_INFOCMP
+  chmod +x "${fake_bin}/infocmp"
+
+  result="$(PATH="${fake_bin}:$PATH" TERM=xterm-256color \
+            AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_prepare_term
+    printf "%s\n" "$TERM"
+  ')"
+  assert_eq "$result" "xterm-256color" "valid terminal should not change"
+}
+
 test_select_tmux_finds_first_free_slot() {
   test_case "select-tmux multi: skips attached slots and picks the first free"
   local fake_bin state
@@ -1224,6 +1268,8 @@ main() {
   test_runtime_dir_prefers_xdg
   test_runtime_dir_ignores_invalid_xdg
   test_runtime_dir_fallback_creates_tmp_subdir
+  test_prepare_term_falls_back_from_missing_terminfo
+  test_prepare_term_preserves_known_terminal
   test_select_tmux_finds_first_free_slot
   test_select_tmux_skips_reserved_slots
   test_select_tmux_max_slots_returns_failure
