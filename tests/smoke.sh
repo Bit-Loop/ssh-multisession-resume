@@ -9,6 +9,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 . "${ROOT_DIR}/tests/lib.sh"
 
 ROOT_INSTALL="${ROOT_DIR}/ssh-multisession-resume"
+RUN_SH="${ROOT_DIR}/run.sh"
 SERVER_INSTALL="${ROOT_DIR}/server/install.sh"
 CLIENT_INSTALL="${ROOT_DIR}/client/install.sh"
 AUTO_RESUME="${ROOT_DIR}/client/auto-resume.sh"
@@ -20,6 +21,7 @@ LEGACY_SCREENRC="${ROOT_DIR}/client/screen-hangup-off.screenrc"
 ALPM_INSTALL="${ROOT_DIR}/ssh-multisession-resume.install"
 PKGBUILD="${ROOT_DIR}/PKGBUILD"
 SRCINFO="${ROOT_DIR}/.SRCINFO"
+PACKAGE_BUILD="${ROOT_DIR}/packaging/build-packages.sh"
 
 # Temp roots: cleaned up at end-of-run via trap.
 TEST_TMP_ROOT="$(mktemp -d)"
@@ -36,9 +38,9 @@ mktemp_d_in_tests() { mktemp -d -p "$TEST_TMP_ROOT"; }
 test_required_files() {
   test_case "files: every distributed source is present"
   local f
-  for f in "$ROOT_INSTALL" "$SERVER_INSTALL" "$CLIENT_INSTALL" "$AUTO_RESUME" \
+  for f in "$ROOT_INSTALL" "$RUN_SH" "$SERVER_INSTALL" "$CLIENT_INSTALL" "$AUTO_RESUME" \
            "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$TMUX_CONF" "$SCREENRC" \
-           "$LEGACY_SCREENRC" "$ALPM_INSTALL" "$PKGBUILD" "$SRCINFO"; do
+           "$LEGACY_SCREENRC" "$ALPM_INSTALL" "$PKGBUILD" "$SRCINFO" "$PACKAGE_BUILD"; do
     assert_file_exists "$f"
   done
 }
@@ -46,8 +48,8 @@ test_required_files() {
 test_bash_syntax() {
   test_case "syntax: bash -n on every bash script"
   local f
-  for f in "$ROOT_INSTALL" "$SERVER_INSTALL" "$CLIENT_INSTALL" "$AUTO_RESUME" \
-           "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$ALPM_INSTALL" \
+  for f in "$ROOT_INSTALL" "$RUN_SH" "$SERVER_INSTALL" "$CLIENT_INSTALL" "$AUTO_RESUME" \
+           "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$ALPM_INSTALL" "$PACKAGE_BUILD" \
            "${ROOT_DIR}/tests/lib.sh" "${ROOT_DIR}/tests/smoke.sh"; do
     if ! bash -n "$f" 2>/dev/null; then
       fail "bash -n failed on $f"
@@ -162,6 +164,24 @@ test_runtime_dir_prefers_xdg() {
     _ssh_auto_resume_runtime_dir
   ')"
   assert_eq "$result" "$xdg" "uses XDG_RUNTIME_DIR"
+}
+
+test_runtime_dir_ignores_invalid_xdg() {
+  test_case "runtime-dir: ignores invalid XDG_RUNTIME_DIR"
+  local xdg fake_uid result
+  xdg="$(mktemp_in_tests)"
+  fake_uid=99998
+  rm -rf "/tmp/ssh-auto-resume-${fake_uid}" 2>/dev/null || true
+  result="$(AUTO_RESUME="$AUTO_RESUME" XDG_RUNTIME_DIR="$xdg" \
+            SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_user=test
+    id() { printf "%s\n" '"$fake_uid"'; }
+    export -f id
+    _ssh_auto_resume_runtime_dir
+  ')"
+  assert_eq "$result" "/tmp/ssh-auto-resume-${fake_uid}" "falls back when XDG is not a directory"
+  rm -rf "/tmp/ssh-auto-resume-${fake_uid}" 2>/dev/null || true
 }
 
 test_runtime_dir_fallback_creates_tmp_subdir() {
@@ -601,6 +621,7 @@ test_cli_help_lists_new_commands() {
   assert_grep '^  \./ssh-multisession-resume doctor' "$out"
   assert_grep 'policy show' "$out"
   assert_grep 'policy set IP MODE' "$out"
+  assert_grep 'policy move OLD_IP NEW_IP' "$out"
   assert_grep 'policy forget IP' "$out"
   assert_grep 'opt-out' "$out"
   assert_grep 'opt-in' "$out"
@@ -644,6 +665,22 @@ test_cli_policy_set_show_forget_clear() {
 
   HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy clear >/dev/null
   assert_dir_empty "${home}/.config/ssh-multisession-resume/choices"
+}
+
+test_cli_policy_move_switches_ip() {
+  test_case "cli: policy move switches a saved choice from one IP to another"
+  local home out
+  home="$(mktemp_d_in_tests)"
+  out="$(mktemp_in_tests)"
+
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set 192.168.1.50 single >/dev/null
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy move 192.168.1.50 10.0.0.9 > "$out"
+  assert_grep 'Moved policy: 192_168_1_50 -> 10_0_0_9' "$out"
+  assert_file_missing "${home}/.config/ssh-multisession-resume/choices/192_168_1_50"
+  assert_file_exists "${home}/.config/ssh-multisession-resume/choices/10_0_0_9"
+  assert_eq "$(cat "${home}/.config/ssh-multisession-resume/choices/10_0_0_9")" "single"
+
+  expect_failure env HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy move 203.0.113.4 203.0.113.5
 }
 
 test_cli_policy_set_rejects_invalid_mode() {
@@ -722,6 +759,60 @@ test_cli_detect_current_extracts_ip() {
 
   expect_failure env -u SSH_CLIENT SSH_CONNECTION='999.0.0.1 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
   expect_failure env -u SSH_CLIENT SSH_CONNECTION='2001:db8::1::2 55555 10.0.0.1 22' "$SERVER_INSTALL" detect-current
+}
+
+# ============================================================
+# Tier 5A: root run.sh source installer
+# ============================================================
+
+test_run_sh_help_lists_install_and_docker_tests() {
+  test_case "run.sh: help lists install and Docker test commands"
+  local out
+  out="$(mktemp_in_tests)"
+  "$RUN_SH" --help > "$out"
+  assert_grep './run\.sh install' "$out"
+  assert_grep './run\.sh test:all' "$out"
+  assert_grep './run\.sh test:aur' "$out"
+  assert_grep './run\.sh package' "$out"
+  assert_grep './run\.sh package:deb' "$out"
+  assert_grep './run\.sh package:rpm' "$out"
+  assert_grep './run\.sh package:apk' "$out"
+}
+
+test_run_sh_temp_install_and_rollback() {
+  test_case "run.sh: source install and rollback work under temp roots"
+  local root prefix etc out
+  root="$(mktemp_d_in_tests)"
+  prefix="${root}/usr/local"
+  etc="${root}/etc"
+  out="$(mktemp_in_tests)"
+
+  SSH_MULTISESSION_PREFIX="$prefix" \
+    SSH_MULTISESSION_ETC_DIR="$etc" \
+    SSH_MULTISESSION_SKIP_DEPS=1 \
+    SSH_MULTISESSION_ASSUME_YES=1 \
+    SSH_MULTISESSION_ZSH_HOOKS=0 \
+    "$RUN_SH" install > "$out"
+
+  assert_file_exists "${prefix}/bin/ssh-multisession-resume"
+  assert_file_exists "${prefix}/lib/ssh-multisession-resume/ssh-multisession-resume"
+  assert_file_exists "${prefix}/lib/ssh-multisession-resume/client/profile-entry.sh"
+  assert_file_exists "${prefix}/lib/ssh-multisession-resume/server/install.sh"
+  assert_file_exists "${etc}/profile.d/ssh-multisession-resume.sh"
+  assert_file_exists "${etc}/profile"
+  assert_grep "${prefix}/lib/ssh-multisession-resume" "${etc}/profile.d/ssh-multisession-resume.sh"
+  assert_grep 'BEGIN ssh-multisession-resume profile hook' "${etc}/profile"
+
+  SSH_MULTISESSION_PREFIX="$prefix" \
+    SSH_MULTISESSION_ETC_DIR="$etc" \
+    SSH_MULTISESSION_ASSUME_YES=1 \
+    SSH_MULTISESSION_ZSH_HOOKS=0 \
+    "$RUN_SH" rollback > "$out"
+
+  assert_file_missing "${prefix}/bin/ssh-multisession-resume"
+  assert_file_missing "${prefix}/lib/ssh-multisession-resume/ssh-multisession-resume"
+  assert_file_missing "${etc}/profile.d/ssh-multisession-resume.sh"
+  assert_no_grep 'ssh-multisession-resume profile hook' "${etc}/profile"
 }
 
 # ============================================================
@@ -1032,6 +1123,22 @@ test_pkgbuild_installs_profile_entry() {
   assert_grep 'profile-entry.sh' "$PKGBUILD"
 }
 
+test_pkgbuild_installs_sourced_helpers_readonly() {
+  test_case "packaging: sourced profile helpers install as readable files"
+  assert_grep 'install -Dm644 client/auto-resume.sh' "$PKGBUILD"
+  assert_grep 'install -Dm644 client/auto-screen.sh' "$PKGBUILD"
+  assert_grep 'install -Dm644 "\${ROOT_DIR}/client/auto-resume.sh"' "$PACKAGE_BUILD"
+  assert_grep 'install -Dm644 "\${ROOT_DIR}/client/auto-screen.sh"' "$PACKAGE_BUILD"
+}
+
+test_local_sshd_snippet_not_shipped() {
+  test_case "packaging: local SSHD example snippet is not shipped"
+  assert_file_missing "${ROOT_DIR}/server/01-sshd-auto-resume.conf"
+  assert_no_grep '01-sshd-auto-resume' "$PKGBUILD"
+  assert_no_grep '01-sshd-auto-resume' "${ROOT_DIR}/docker/test-in-container.sh"
+  assert_no_grep '01-sshd-auto-resume' "${ROOT_DIR}/README.md"
+}
+
 test_pkgbuild_install_block_matches_files() {
   test_case "packaging: every install -Dm... source path exists in the tree"
   local line src
@@ -1047,6 +1154,27 @@ test_pkgbuild_install_block_matches_files() {
   done < <(grep '^[[:space:]]*install -Dm' "$PKGBUILD")
 }
 
+test_package_builder_declares_portable_architectures() {
+  test_case "packaging: package builder emits architecture-independent metadata"
+  assert_grep 'Packages are architecture-independent' "$PACKAGE_BUILD"
+  assert_grep 'Architecture: all' "$PACKAGE_BUILD"
+  assert_grep 'BuildArch:[[:space:]]*noarch' "$PACKAGE_BUILD"
+  assert_grep 'arch="noarch"' "$PACKAGE_BUILD"
+}
+
+test_package_builder_supports_expected_formats() {
+  test_case "packaging: package builder supports Arch, deb, rpm, and apk"
+  assert_grep 'packaging/build-packages.sh arch' "$PACKAGE_BUILD"
+  assert_grep 'packaging/build-packages.sh deb' "$PACKAGE_BUILD"
+  assert_grep 'packaging/build-packages.sh rpm' "$PACKAGE_BUILD"
+  assert_grep 'packaging/build-packages.sh apk' "$PACKAGE_BUILD"
+  assert_grep 'build_arch' "$PACKAGE_BUILD"
+  assert_grep 'build_deb' "$PACKAGE_BUILD"
+  assert_grep 'build_rpm' "$PACKAGE_BUILD"
+  assert_grep 'build_apk' "$PACKAGE_BUILD"
+  assert_grep 'abuild -F -d -r' "$PACKAGE_BUILD"
+}
+
 # ============================================================
 # Run all tests
 # ============================================================
@@ -1060,6 +1188,7 @@ main() {
   test_sanitize_replaces_special_chars
   test_source_ip_extraction
   test_runtime_dir_prefers_xdg
+  test_runtime_dir_ignores_invalid_xdg
   test_runtime_dir_fallback_creates_tmp_subdir
   test_select_tmux_finds_first_free_slot
   test_select_tmux_skips_reserved_slots
@@ -1086,6 +1215,7 @@ main() {
   test_cli_help_lists_new_commands
   test_cli_default_action_is_summary
   test_cli_policy_set_show_forget_clear
+  test_cli_policy_move_switches_ip
   test_cli_policy_set_rejects_invalid_mode
   test_cli_policy_set_requires_ip_and_mode
   test_cli_policy_show_when_empty
@@ -1093,6 +1223,9 @@ main() {
   test_cli_optout_optin_roundtrip
   test_cli_unknown_action_fails
   test_cli_detect_current_extracts_ip
+
+  test_run_sh_help_lists_install_and_docker_tests
+  test_run_sh_temp_install_and_rollback
 
   test_mode_env_override_precedence
 
@@ -1117,7 +1250,11 @@ main() {
 
   test_pkgbuild_promotes_tmux_screen_to_depends
   test_pkgbuild_installs_profile_entry
+  test_pkgbuild_installs_sourced_helpers_readonly
+  test_local_sshd_snippet_not_shipped
   test_pkgbuild_install_block_matches_files
+  test_package_builder_declares_portable_architectures
+  test_package_builder_supports_expected_formats
 
   print_summary
 }

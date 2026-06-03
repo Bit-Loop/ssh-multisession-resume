@@ -30,6 +30,7 @@ Usage:
   ${cmd} monitor [--interval SECS]      watch managed sessions
   ${cmd} policy show                    list saved per-IP choices
   ${cmd} policy set IP MODE             save a choice (single|multi|skip)
+  ${cmd} policy move OLD_IP NEW_IP      move a saved choice to a new IP
   ${cmd} policy forget IP               drop the saved choice for IP
   ${cmd} policy clear                   drop all saved choices
   ${cmd} opt-out                        disable the SSH menu for this user
@@ -595,6 +596,20 @@ cmd_policy() {
       chmod 700 "$(policy_dir)" 2>/dev/null || true
       printf '%s\n' "$mode" > "${choices_dir}/${safe}"
       echo "Saved policy: ${safe} -> ${mode}"
+      ;;
+    move|mv|rename|switch)
+      local old_ip="${1:-}" new_ip="${2:-}"
+      [[ -n "$old_ip" && -n "$new_ip" ]] || die "Usage: $(operator_command) policy move OLD_IP NEW_IP"
+      local old_safe new_safe choices_dir
+      old_safe="$(sanitize_ip_for_path "$old_ip")"
+      new_safe="$(sanitize_ip_for_path "$new_ip")"
+      [[ -n "$old_safe" && -n "$new_safe" ]] || die "Empty IP after sanitization."
+      choices_dir="$(policy_choices_dir)"
+      [[ -f "${choices_dir}/${old_safe}" ]] || die "No saved policy for: ${old_safe}"
+      mkdir -p "$choices_dir"
+      chmod 700 "$(policy_dir)" 2>/dev/null || true
+      mv -f "${choices_dir}/${old_safe}" "${choices_dir}/${new_safe}"
+      echo "Moved policy: ${old_safe} -> ${new_safe}"
       ;;
     forget|drop|delete|rm)
       local ip="${1:-}"

@@ -49,6 +49,7 @@ __pycache__/
 # Packaged release artifacts
 pkg/
 src/
+dist/
 /ssh-multisession-resume/
 /ssh-multisession-resume-source/
 *.tar
@@ -61,3 +62,4 @@ src/
 *.7z
 *.deb
 *.rpm
+*.apk

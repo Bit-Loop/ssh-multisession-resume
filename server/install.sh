@@ -586,7 +586,7 @@ cmd_add_current() {
     done < <(split_addresses "$existing_addresses")
   fi
 
-  if ! address_in_list "$detected" "${merged[@]}"; then
+  if [[ ${#merged[@]} -eq 0 ]] || ! address_in_list "$detected" "${merged[@]}"; then
     merged+=("$detected")
   fi
 

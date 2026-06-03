@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Runs inside the Arch container built from docker/Dockerfile.
+# Runs inside distro containers built from docker/Dockerfile.
 #
 # Modes:
-#   default            full single-container run
+#   --mode arch-package  Arch package path: makepkg -> smoke -> profile.d checks
+#   --mode source-login  source install path: ./run.sh install -> real SSH login
 #   --phase save       set persistent state into $HOME for the second container
 #   --phase verify     read the saved state back; assert "reboot" survival
 #
@@ -20,7 +21,9 @@ TESTER_HOME="${HOME:-/home/tester}"
 
 PASS_COUNT=0
 FAIL_COUNT=0
+MODE="arch-package"
 PHASE="full"
+SSHD_PID=""
 
 red()    { printf '\033[31m%s\033[0m\n' "$1"; }
 green()  { printf '\033[32m%s\033[0m\n' "$1"; }
@@ -30,20 +33,43 @@ heading() { printf '\n\033[1;34m== %s ==\033[0m\n' "$1"; }
 ok()   { green   "  PASS: $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { red     "  FAIL: $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
-case "${1:-}" in
-  --phase) PHASE="${2:?}"; shift 2 ;;
-esac
+cleanup_container() {
+  if id tester >/dev/null 2>&1; then
+    sudo -u tester env HOME=/home/tester USER=tester tmux -L ssh-resume-tester kill-server >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${SSHD_PID:-}" ]]; then
+    kill "$SSHD_PID" >/dev/null 2>&1 || true
+    wait "$SSHD_PID" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_container EXIT INT TERM HUP
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode)
+      MODE="${2:?}"
+      shift 2
+      ;;
+    --phase)
+      PHASE="${2:?}"
+      shift 2
+      ;;
+    *)
+      red "unknown arg: $1"
+      exit 2
+      ;;
+  esac
+done
 
 install_package_files() {
   sudo install -Dm755 ssh-multisession-resume "${LIB_DIR}/ssh-multisession-resume"
   sudo install -Dm755 client/install.sh        "${LIB_DIR}/client/install.sh"
-  sudo install -Dm755 client/auto-resume.sh    "${LIB_DIR}/client/auto-resume.sh"
-  sudo install -Dm755 client/auto-screen.sh    "${LIB_DIR}/client/auto-screen.sh"
+  sudo install -Dm644 client/auto-resume.sh    "${LIB_DIR}/client/auto-resume.sh"
+  sudo install -Dm644 client/auto-screen.sh    "${LIB_DIR}/client/auto-screen.sh"
   sudo install -Dm644 client/tmux-auto-resume.conf       "${LIB_DIR}/client/tmux-auto-resume.conf"
   sudo install -Dm644 client/screen-auto-resume.screenrc "${LIB_DIR}/client/screen-auto-resume.screenrc"
   sudo install -Dm644 client/screen-hangup-off.screenrc  "${LIB_DIR}/client/screen-hangup-off.screenrc"
   sudo install -Dm755 server/install.sh        "${LIB_DIR}/server/install.sh"
-  sudo install -Dm644 server/01-sshd-auto-resume.conf    "${LIB_DIR}/server/01-sshd-auto-resume.conf"
   sudo install -Dm644 client/profile-entry.sh  "${ETC_HOOK}"
 
   sudo install -dm755 /usr/bin
@@ -57,6 +83,12 @@ EOF
 
 build_and_install_local_package() {
   local build_dir src_name pkg_file current_pkgver
+
+  if ! id builder >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash builder
+  fi
+  printf 'builder ALL=(ALL:ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/builder
+  chmod 0440 /etc/sudoers.d/builder
 
   build_dir="$(mktemp -d)"
   src_name="${PROG_NAME}-source"
@@ -86,8 +118,9 @@ build_and_install_local_package() {
     printf '}\n'
   } >> "${build_dir}/PKGBUILD"
   cp /work/ssh-multisession-resume.install "$build_dir/"
+  chown -R builder:builder "$build_dir"
 
-  if (cd "$build_dir" && makepkg --syncdeps --install --noconfirm --needed); then
+  if (cd "$build_dir" && sudo -u builder makepkg --syncdeps --install --noconfirm --needed); then
     pkg_file="$(find "$build_dir" -maxdepth 1 -name "${PROG_NAME}-git-*.pkg.tar.*" -print -quit)"
     if [[ -n "$pkg_file" ]]; then
       ok "built package artifact: $(basename "$pkg_file")"
@@ -102,6 +135,184 @@ build_and_install_local_package() {
   fi
 
   rm -rf "$build_dir"
+}
+
+prepare_login_user() {
+  local user="tester"
+  local key="/tmp/${PROG_NAME}-test-key"
+
+  if ! id "$user" >/dev/null 2>&1; then
+    sudo useradd --create-home --shell /bin/bash "$user"
+  fi
+  printf 'tester:tester\n' | sudo chpasswd
+
+  sudo install -d -m700 -o "$user" -g "$user" /home/tester/.ssh
+  rm -f "$key" "${key}.pub"
+  ssh-keygen -t ed25519 -N '' -f "$key" >/dev/null
+  sudo install -m600 -o "$user" -g "$user" "${key}.pub" /home/tester/.ssh/authorized_keys
+}
+
+sshd_path() {
+  command -v sshd 2>/dev/null || printf '/usr/sbin/sshd\n'
+}
+
+start_test_sshd() {
+  local config="/tmp/sshd_config"
+  local sshd
+  sshd="$(sshd_path)"
+
+  sudo ssh-keygen -A >/dev/null
+  sudo mkdir -p /run/sshd
+  sudo tee "$config" >/dev/null <<EOF
+Port 2222
+ListenAddress 127.0.0.1
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+UsePAM no
+PrintMotd no
+PidFile /tmp/sshd.pid
+Subsystem sftp internal-sftp
+EOF
+
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    "$sshd" -D -f "$config" -E /tmp/sshd.log &
+  else
+    sudo "$sshd" -D -f "$config" -E /tmp/sshd.log &
+  fi
+  SSHD_PID=$!
+  for _ in $(seq 1 50); do
+    if ssh -p 2222 -i /tmp/${PROG_NAME}-test-key \
+      -o BatchMode=yes \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR \
+      tester@127.0.0.1 true >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  if [[ -f /tmp/sshd.log ]]; then
+    cat /tmp/sshd.log >&2 || true
+  fi
+  fail "test sshd did not become ready"
+}
+
+run_ssh_login() {
+  local _cli="$1"
+  local out="$2"
+
+  (sleep 8) | TERM=xterm timeout 10 ssh -tt -p 2222 -i /tmp/${PROG_NAME}-test-key \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR \
+      tester@127.0.0.1 > "$out" 2>&1 || true
+}
+
+tester_runtime_dir() {
+  local uid
+  uid="$(id -u tester)"
+  printf '/tmp/ssh-auto-resume-%s\n' "$uid"
+}
+
+tester_tmux() {
+  sudo -u tester env HOME=/home/tester USER=tester TMUX_TMPDIR="$(tester_runtime_dir)" tmux -L ssh-resume-tester "$@"
+}
+
+managed_tmux_sessions() {
+  tester_tmux list-sessions 2>/dev/null || true
+}
+
+assert_single_managed_slot() {
+  local label="$1"
+  local out="$2"
+  local sessions
+  local count
+
+  sessions="$(managed_tmux_sessions)"
+  count="$(printf '%s\n' "$sessions" | grep -Ec '^ip-127_0_0_1-[0-9]+:' || true)"
+  if [[ "$count" == "1" ]] && printf '%s\n' "$sessions" | grep -q '^ip-127_0_0_1-0:'; then
+    ok "$label"
+  else
+    fail "$label failed; sessions: ${sessions:-<none>}; ssh output: $(cat "$out")"
+  fi
+}
+
+assert_real_ssh_login_reuses_session() {
+  local cli="$1"
+  local out1="/tmp/${PROG_NAME}-login-1.out"
+  local out2="/tmp/${PROG_NAME}-login-2.out"
+
+  tester_tmux kill-server >/dev/null 2>&1 || true
+  sudo -u tester env HOME=/home/tester USER=tester "$cli" policy set 127.0.0.1 single >/dev/null
+
+  run_ssh_login "$cli" "$out1"
+  assert_single_managed_slot "first real SSH login lands in managed tmux slot 0" "$out1"
+
+  run_ssh_login "$cli" "$out2"
+  assert_single_managed_slot "second real SSH login reuses managed tmux slot 0" "$out2"
+  tester_tmux kill-server >/dev/null 2>&1 || true
+}
+
+run_source_login_suite() {
+  heading "Phase A: source install from checkout"
+  if SSH_MULTISESSION_ASSUME_YES=1 /work/run.sh install --yes; then
+    ok "run.sh install completed"
+  else
+    fail "run.sh install failed"
+  fi
+
+  for path in /usr/local/bin/${PROG_NAME} /usr/local/lib/${PROG_NAME}/${PROG_NAME} /etc/profile.d/${PROG_NAME}.sh; do
+    if [[ -e "$path" ]]; then
+      ok "installed $path"
+    else
+      fail "missing $path"
+    fi
+  done
+
+  if command -v tmux >/dev/null 2>&1; then
+    ok "tmux present after source install"
+  else
+    fail "tmux missing after source install"
+  fi
+  if command -v screen >/dev/null 2>&1; then
+    ok "screen present after source install"
+  else
+    fail "screen missing after source install"
+  fi
+  if command -v sshd >/dev/null 2>&1 || [[ -x /usr/sbin/sshd ]]; then
+    ok "sshd present after source install"
+  else
+    fail "sshd missing after source install"
+  fi
+
+  heading "Phase B: source tree smoke suite"
+  if env -u TMUX -u STY bash tests/smoke.sh; then
+    ok "smoke suite"
+  else
+    fail "smoke suite"
+  fi
+
+  heading "Phase C: real SSH login"
+  prepare_login_user
+  start_test_sshd
+  assert_real_ssh_login_reuses_session /usr/local/bin/${PROG_NAME}
+
+  heading "Phase D: source rollback"
+  if SSH_MULTISESSION_ASSUME_YES=1 /work/run.sh rollback --yes; then
+    ok "run.sh rollback completed"
+  else
+    fail "run.sh rollback failed"
+  fi
+  if [[ ! -e /usr/local/bin/${PROG_NAME} && ! -e /etc/profile.d/${PROG_NAME}.sh ]]; then
+    ok "source install files removed"
+  else
+    fail "source install files remain after rollback"
+  fi
 }
 
 run_full_suite() {
@@ -487,15 +698,26 @@ run_phase_verify() {
   fi
 }
 
-case "$PHASE" in
-  full)    run_full_suite ;;
-  save)    install_package_files; run_phase_save ;;
-  verify)  run_phase_verify ;;
-  *)       red "unknown phase: $PHASE"; exit 2 ;;
+case "$MODE" in
+  arch-package)
+    case "$PHASE" in
+      full)    run_full_suite ;;
+      save)    install_package_files; run_phase_save ;;
+      verify)  run_phase_verify ;;
+      *)       red "unknown phase: $PHASE"; exit 2 ;;
+    esac
+    ;;
+  source-login)
+    run_source_login_suite
+    ;;
+  *)
+    red "unknown mode: $MODE"
+    exit 2
+    ;;
 esac
 
 echo
-printf '%s passed, %s failed (phase=%s)\n' "$PASS_COUNT" "$FAIL_COUNT" "$PHASE"
+printf '%s passed, %s failed (mode=%s phase=%s)\n' "$PASS_COUNT" "$FAIL_COUNT" "$MODE" "$PHASE"
 if [[ "$FAIL_COUNT" -gt 0 ]]; then
   red "CONTAINER PHASE FAILED"
   exit 1

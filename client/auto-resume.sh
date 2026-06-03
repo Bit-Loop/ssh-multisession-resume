@@ -21,7 +21,7 @@ _ssh_auto_resume_main() {
     _ssh_auto_resume_tmp_uid=""
     _ssh_auto_resume_tmp_dir=""
 
-    if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "${XDG_RUNTIME_DIR:-}" ]; then
+    if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "${XDG_RUNTIME_DIR:-}" ] && [ -w "${XDG_RUNTIME_DIR:-}" ]; then
       printf '%s' "$XDG_RUNTIME_DIR"
     else
       _ssh_auto_resume_tmp_uid="$(id -u 2>/dev/null || printf '%s' "$_ssh_auto_resume_user")"
@@ -333,6 +333,10 @@ _ssh_auto_resume_main() {
   _ssh_auto_resume_source="$(_ssh_auto_resume_sanitize "$(_ssh_auto_resume_source)")"
   _ssh_auto_resume_session_base="ip-${_ssh_auto_resume_source}"
   _ssh_auto_resume_runtime="$(_ssh_auto_resume_runtime_dir)" || return 0
+  if [ -z "${TMUX_TMPDIR:-}" ]; then
+    TMUX_TMPDIR="$_ssh_auto_resume_runtime"
+    export TMUX_TMPDIR
+  fi
   _ssh_auto_resume_lock_dir="${_ssh_auto_resume_runtime}/${_ssh_auto_resume_socket_name}.slot.lock"
   _ssh_auto_resume_reservation_dir="${_ssh_auto_resume_runtime}/${_ssh_auto_resume_socket_name}.reservations"
   _ssh_auto_resume_reservation=""

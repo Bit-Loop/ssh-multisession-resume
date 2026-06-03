@@ -1,35 +1,56 @@
 # Containerized Test Suite
 
-Reproducible TDD on a clean Arch base image. Mirrors what an AUR user gets.
+Docker tests cover both install paths:
+
+- source checkout installs through `./run.sh`
+- AUR installs by cloning `ssh-multisession-resume-git` inside a vanilla Arch container
 
 ## Usage
 
 ```bash
-./docker/run.sh           # build + run, log to docker/output/<ts>.log
-./docker/run.sh build     # build image only
-./docker/run.sh test      # re-run tests on the existing image
-./docker/run.sh shell     # interactive shell inside the container
+./run.sh test:all       # local package test + all source distro tests
+./run.sh test:aur       # remote AUR package in vanilla Arch
+./run.sh test:debian    # one source-install distro
+./run.sh package        # build Arch/deb/rpm/apk artifacts into dist/
+./docker/run.sh shell debian
 ```
 
-## What it does
+Supported source-install images:
 
-1. Builds `archlinux:base-devel` with system and test tooling only. `tmux`
-   and `screen` are deliberately absent from the image.
-2. Builds and installs the local package with `makepkg --syncdeps --install`,
-   proving `tmux` and `screen` arrive through package dependency resolution.
-3. Runs `tests/smoke.sh`, the TDD smoke suite.
-4. Asserts the **zero-touch** guarantees, in order:
-   - Non-SSH login is a clean no-op.
-   - `~/.config/ssh-multisession-resume/opt-out` short-circuits without
-     prompting.
-   - A saved choice (`single` / `multi` / `skip`) bypasses the menu.
-   - `policy set / show / forget / clear` round-trips through the
-     installed CLI.
-   - `--help` advertises every user-facing subcommand.
-   - The default no-args action is non-interactive (no Y/N prompt).
+- Arch (`pacman`)
+- Debian (`apt-get`)
+- Ubuntu (`apt-get`)
+- Fedora (`dnf`)
+- Amazon Linux 2 (`yum`)
+- openSUSE Leap (`zypper`)
+- Alpine (`apk`)
 
-If every assertion holds, the container exits 0 with `CONTAINER PHASE OK`.
+Package artifact builds use clean family-specific containers:
 
-## Outputs
+- Arch package: `archlinux:base-devel`
+- Debian/Ubuntu `.deb`: `debian:stable-slim`
+- RPM-family `.rpm`: `fedora:latest`
+- Alpine `.apk`: `alpine:latest`
 
-`docker/output/` collects timestamped logs. The directory is gitignored.
+The generated artifacts are architecture-independent (`any`, `all`, or
+`noarch`) and are written to `dist/`.
+
+## What It Verifies
+
+For each source-install image:
+
+1. `./run.sh install --yes` installs runtime dependencies through the distro package manager.
+2. `/usr/local/bin/ssh-multisession-resume` and global profile hooks are installed.
+3. `tests/smoke.sh` passes.
+4. A local `sshd` starts inside the container.
+5. Two real SSH logins attach to the same managed `tmux` session.
+6. `./run.sh rollback --yes` removes source-installed files and hooks.
+
+For the AUR image:
+
+1. A clean `archlinux:base-devel` container installs only build tooling.
+2. The test clones `https://aur.archlinux.org/ssh-multisession-resume-git.git`.
+3. `makepkg --syncdeps --install --noconfirm` installs the package.
+4. A real SSH login verifies the installed command lands in managed `tmux`.
+
+Logs land in `docker/output/<UTC-timestamp>.log`.

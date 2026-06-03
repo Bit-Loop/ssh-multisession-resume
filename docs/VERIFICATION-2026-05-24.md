@@ -201,7 +201,7 @@ Per-run logs land in `docker/output/<UTC-timestamp>.log` (gitignored).
 As of 2026-05-24, on the local release candidate:
 
 - The user does **nothing** to set up `ssh-multisession-resume` beyond
-  installing the AUR package (`pacman -S ssh-multisession-resume-git`).
+  installing the AUR package with an AUR helper or `makepkg`.
 - The only interaction is picking single / multi / skip in a menu the
   first time they SSH in from a given source IP.
 - No memory, file-descriptor, X11, Wayland, SSH-agent, or session-state

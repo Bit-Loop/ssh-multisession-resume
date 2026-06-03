@@ -10,9 +10,13 @@
 # working dirs and are the only generated paths we actually need to drop.
 pkg/
 src/
+dist/
 ssh-multisession-resume-source/
 *.pkg.tar.*
 *.pkg.tar.*.sig
+*.deb
+*.rpm
+*.apk
 *.tar
 *.tar.gz
 *.tgz

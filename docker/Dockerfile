@@ -1,35 +1,10 @@
-FROM archlinux:base-devel
+ARG BASE_IMAGE=archlinux:base-devel
+FROM ${BASE_IMAGE}
 
-# Intentionally NOT pre-installing tmux or screen. The package depends on both,
-# and the container verifies that makepkg/pacman installs them. Everything
-# below is either a system-level base (bash, sudo, openssh) or test-only tooling.
-RUN pacman -Syu --noconfirm --needed \
-        bash \
-        openssh \
-        sudo \
-        shellcheck \
-        zsh \
-        dash \
-        coreutils \
-        findutils \
-        gawk \
-        grep \
-        sed \
-        procps-ng \
-        util-linux \
-        lsof \
-    && pacman -Scc --noconfirm
-
-# makepkg refuses to run as root, but most of our checks are package-free.
-# A non-root user keeps things realistic and lets us test sudo-driven paths.
-RUN useradd --create-home --shell /bin/bash --groups wheel tester \
-    && printf '%%wheel ALL=(ALL:ALL) NOPASSWD: ALL\n' >> /etc/sudoers.d/wheel \
-    && chmod 0440 /etc/sudoers.d/wheel
+ARG BOOTSTRAP=":"
+RUN /bin/sh -c "${BOOTSTRAP}"
 
 WORKDIR /work
-COPY --chown=tester:tester . /work/
+COPY . /work/
 
-USER tester
-ENV HOME=/home/tester
-ENV TMUX= STY=
-CMD ["/work/docker/test-in-container.sh"]
+CMD ["/work/docker/test-in-container.sh", "--mode", "source-login"]

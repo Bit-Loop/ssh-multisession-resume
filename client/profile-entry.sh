@@ -22,7 +22,14 @@ if [ -f "${_ssh_multisession_resume_xdg}/ssh-multisession-resume/opt-out" ]; the
 fi
 unset _ssh_multisession_resume_xdg
 
-_ssh_multisession_resume_lib="/usr/lib/ssh-multisession-resume"
+_ssh_multisession_resume_lib="${SSH_MULTISESSION_RESUME_LIB:-}"
+if [ -z "${_ssh_multisession_resume_lib}" ]; then
+  if [ -r "/usr/local/lib/ssh-multisession-resume/client/auto-resume.sh" ]; then
+    _ssh_multisession_resume_lib="/usr/local/lib/ssh-multisession-resume"
+  else
+    _ssh_multisession_resume_lib="/usr/lib/ssh-multisession-resume"
+  fi
+fi
 if [ ! -r "${_ssh_multisession_resume_lib}/client/auto-resume.sh" ]; then
   unset _ssh_multisession_resume_lib
   return 0

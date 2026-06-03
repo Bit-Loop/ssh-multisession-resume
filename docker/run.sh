@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# Host-side driver: build the Arch container image and run the in-container
-# test script. Idempotent. Logs into docker/output/<timestamp>.log.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-
-IMAGE_TAG="${SSH_MULTISESSION_TEST_IMAGE:-ssh-multisession-resume-test:arch}"
-VOLUME_NAME="${SSH_MULTISESSION_TEST_VOLUME:-ssh-multisession-resume-test-home}"
 LOG_DIR="${SCRIPT_DIR}/output"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/$(date -u +'%Y%m%dT%H%M%SZ').log"
@@ -15,94 +10,241 @@ LOG_FILE="${LOG_DIR}/$(date -u +'%Y%m%dT%H%M%SZ').log"
 usage() {
   cat <<USAGE
 Usage:
-  $0                 build image then run tests, log to ${LOG_DIR}
-  $0 build           build image only
-  $0 test            run single-container test against an existing image
-  $0 persistence     run the two-container reboot-persistence test
-  $0 shell           drop into an interactive shell inside the container
+  ./docker/run.sh package          local PKGBUILD/package test on Arch
+  ./docker/run.sh arch             source install + SSH login on Arch
+  ./docker/run.sh debian           source install + SSH login on Debian
+  ./docker/run.sh ubuntu           source install + SSH login on Ubuntu
+  ./docker/run.sh fedora           source install + SSH login on Fedora
+  ./docker/run.sh yum              source install + SSH login on yum
+  ./docker/run.sh opensuse         source install + SSH login on openSUSE
+  ./docker/run.sh alpine           source install + SSH login on Alpine
+  ./docker/run.sh all              package + all source distro tests
+  ./docker/run.sh aur              pull AUR package in vanilla Arch and SSH-test it
+  ./docker/run.sh build-package FORMAT
+                                  build package artifact: all, arch, deb, rpm, apk
+  ./docker/run.sh shell DISTRO     interactive shell in a distro test image
 
-Env:
-  SSH_MULTISESSION_TEST_IMAGE    override the image tag (default: ${IMAGE_TAG})
-  SSH_MULTISESSION_TEST_VOLUME   override the persistence volume name
-  SSH_MULTISESSION_TEST_VERBOSE  set to 1 for per-test PASS lines
+Logs are written to ${LOG_DIR}.
 USAGE
 }
 
-log() { printf '%s\n' "$*" | tee -a "$LOG_FILE"; }
+log() {
+  printf '%s\n' "$*" | tee -a "$LOG_FILE"
+}
 
-build() {
-  log "Building image $IMAGE_TAG ..."
+image_name() {
+  printf 'ssh-multisession-resume-test:%s\n' "$1"
+}
+
+distro_base() {
+  case "$1" in
+    package|arch) printf '%s\n' 'archlinux:base-devel' ;;
+    debian)       printf '%s\n' 'debian:stable-slim' ;;
+    ubuntu)       printf '%s\n' 'ubuntu:24.04' ;;
+    fedora)       printf '%s\n' 'fedora:latest' ;;
+    yum)          printf '%s\n' 'amazonlinux:2' ;;
+    opensuse)     printf '%s\n' 'opensuse/leap:latest' ;;
+    alpine)       printf '%s\n' 'alpine:latest' ;;
+    *) return 1 ;;
+  esac
+}
+
+distro_bootstrap() {
+  case "$1" in
+    package)
+      printf '%s\n' 'pacman -Syu --noconfirm --needed bash sudo git zsh dash coreutils findutils gawk grep sed procps-ng util-linux lsof ca-certificates shadow'
+      ;;
+    arch)
+      printf '%s\n' 'pacman -Syu --noconfirm --needed bash sudo git coreutils findutils gawk grep sed procps-ng util-linux ca-certificates shadow'
+      ;;
+    debian|ubuntu)
+      printf '%s\n' 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash sudo git ca-certificates passwd procps coreutils findutils gawk grep sed util-linux'
+      ;;
+    fedora)
+      printf '%s\n' 'dnf install -y bash sudo git ca-certificates shadow-utils procps-ng coreutils findutils gawk grep sed util-linux'
+      ;;
+    yum)
+      printf '%s\n' 'yum install -y bash sudo git ca-certificates shadow-utils procps-ng coreutils findutils gawk grep sed util-linux'
+      ;;
+    opensuse)
+      printf '%s\n' 'zypper --non-interactive refresh && zypper --non-interactive install -y bash sudo git ca-certificates shadow procps coreutils findutils gawk grep sed util-linux'
+      ;;
+    alpine)
+      printf '%s\n' 'apk add --no-cache bash sudo git ca-certificates shadow procps coreutils findutils gawk grep sed util-linux'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+package_build_base() {
+  case "$1" in
+    arch) printf '%s\n' 'archlinux:base-devel' ;;
+    deb)  printf '%s\n' 'debian:stable-slim' ;;
+    rpm)  printf '%s\n' 'fedora:latest' ;;
+    apk)  printf '%s\n' 'alpine:latest' ;;
+    *) return 1 ;;
+  esac
+}
+
+package_build_bootstrap() {
+  case "$1" in
+    arch)
+      printf '%s\n' 'pacman -Syu --noconfirm --needed bash sudo git coreutils findutils gawk grep sed tar gzip zstd shadow'
+      ;;
+    deb)
+      printf '%s\n' 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y bash dpkg coreutils findutils gawk grep sed tar gzip'
+      ;;
+    rpm)
+      printf '%s\n' 'dnf install -y bash rpm-build coreutils findutils gawk grep sed tar gzip'
+      ;;
+    apk)
+      printf '%s\n' 'apk add --no-cache alpine-sdk bash coreutils findutils gawk grep sed tar gzip'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+build_image() {
+  local distro="$1"
+  local image base bootstrap
+  image="$(image_name "$distro")"
+  base="$(distro_base "$distro")"
+  bootstrap="$(distro_bootstrap "$distro")"
+
+  log "Building ${image} from ${base} ..."
   docker build \
     -f "${SCRIPT_DIR}/Dockerfile" \
-    -t "$IMAGE_TAG" \
+    --build-arg "BASE_IMAGE=${base}" \
+    --build-arg "BOOTSTRAP=${bootstrap}" \
+    -t "$image" \
     "$REPO_DIR" 2>&1 | tee -a "$LOG_FILE"
 }
 
-run_tests() {
-  log "Running container tests, logging to $LOG_FILE ..."
-  if docker run --rm \
-       -e SSH_MULTISESSION_TEST_VERBOSE="${SSH_MULTISESSION_TEST_VERBOSE:-0}" \
-       "$IMAGE_TAG" 2>&1 | tee -a "$LOG_FILE"; then
-    log "Log saved to $LOG_FILE"
-  else
-    rc=$?
-    log "Container tests failed (exit $rc). Log: $LOG_FILE"
-    return "$rc"
-  fi
-}
+run_image() {
+  local distro="$1"
+  local mode="$2"
+  local image
+  image="$(image_name "$distro")"
 
-persistence() {
-  # Reboot-persistence flow:
-  #   1. Recreate a named docker volume to back /home/tester.
-  #   2. Container A mounts it, runs the full suite, and saves policy state.
-  #   3. Container A exits.
-  #   4. Container B mounts the same volume and runs the verify phase
-  #      against the persisted state — proving that nothing the user did
-  #      first time is needed again across a "reboot".
-  log "Persistence test starting (volume: $VOLUME_NAME)"
-
-  if docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
-    log "Removing pre-existing $VOLUME_NAME ..."
-    docker volume rm "$VOLUME_NAME" >/dev/null
-  fi
-  docker volume create "$VOLUME_NAME" >/dev/null
-
-  log
-  log "[Phase 1/2] container A: save state into $VOLUME_NAME"
-  if ! docker run --rm \
-       -v "${VOLUME_NAME}:/home/tester" \
-       "$IMAGE_TAG" /work/docker/test-in-container.sh --phase save 2>&1 | tee -a "$LOG_FILE"; then
-    log "Phase 1 failed"
-    docker volume rm "$VOLUME_NAME" >/dev/null 2>&1 || true
-    return 1
-  fi
-
-  log
-  log "[Phase 2/2] container B: verify state against $VOLUME_NAME"
-  if ! docker run --rm \
-       -v "${VOLUME_NAME}:/home/tester" \
-       "$IMAGE_TAG" /work/docker/test-in-container.sh --phase verify 2>&1 | tee -a "$LOG_FILE"; then
-    log "Phase 2 failed"
-    docker volume rm "$VOLUME_NAME" >/dev/null 2>&1 || true
-    return 1
-  fi
-
-  docker volume rm "$VOLUME_NAME" >/dev/null
-  log "Persistence test OK."
-}
-
-shell() {
-  docker run --rm -it \
+  log "Running ${distro} (${mode}) ..."
+  docker run --rm \
     -e SSH_MULTISESSION_TEST_VERBOSE="${SSH_MULTISESSION_TEST_VERBOSE:-0}" \
-    "$IMAGE_TAG" /bin/bash
+    "$image" /work/docker/test-in-container.sh --mode "$mode" 2>&1 | tee -a "$LOG_FILE"
+}
+
+run_package() {
+  build_image package
+  run_image package arch-package
+}
+
+run_source_distro() {
+  local distro="$1"
+  build_image "$distro"
+  run_image "$distro" source-login
+}
+
+run_all() {
+  local distro
+  run_package
+  for distro in arch debian ubuntu fedora yum opensuse alpine; do
+    run_source_distro "$distro"
+  done
+}
+
+run_package_build_one() {
+  local format="$1"
+  local base bootstrap uid gid
+
+  base="$(package_build_base "$format")" || {
+    usage >&2
+    exit 2
+  }
+  bootstrap="$(package_build_bootstrap "$format")"
+  uid="$(id -u)"
+  gid="$(id -g)"
+
+  log "Building ${format} package artifact in ${base} ..."
+  docker run --rm \
+    -v "${REPO_DIR}:/work" \
+    -w /work \
+    -e SSH_MULTISESSION_DIST_DIR=/work/dist \
+    "$base" /bin/sh -lc \
+      "${bootstrap} && /bin/bash /work/packaging/build-packages.sh ${format} && chown -R ${uid}:${gid} /work/dist" \
+    2>&1 | tee -a "$LOG_FILE"
+}
+
+run_package_build() {
+  local format="${1:-all}"
+  local item
+  case "$format" in
+    all)
+      for item in arch deb rpm apk; do
+        run_package_build_one "$item"
+      done
+      ;;
+    arch|deb|rpm|apk)
+      run_package_build_one "$format"
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+run_aur() {
+  log "Running vanilla Arch AUR test ..."
+  docker run --rm \
+    -v "${SCRIPT_DIR}/aur-test.sh:/aur-test.sh:ro" \
+    archlinux:base-devel /bin/bash /aur-test.sh 2>&1 | tee -a "$LOG_FILE"
+}
+
+run_shell() {
+  local distro="${1:-arch}"
+  local image
+  build_image "$distro"
+  image="$(image_name "$distro")"
+  docker run --rm -it "$image" /bin/bash
 }
 
 case "${1:-all}" in
-  all)         build && run_tests ;;
-  build)       build ;;
-  test)        run_tests ;;
-  persistence) persistence ;;
-  shell)       shell ;;
-  -h|--help)   usage ;;
-  *)           usage >&2; exit 2 ;;
+  package)  run_package ;;
+  arch|debian|ubuntu|fedora|yum|opensuse|alpine)
+    run_source_distro "$1"
+    ;;
+  all)      run_all ;;
+  aur)      run_aur ;;
+  build-package|build-packages)
+    shift
+    run_package_build "${1:-all}"
+    ;;
+  package:all|packages)
+    run_package_build all
+    ;;
+  package:arch)
+    run_package_build arch
+    ;;
+  package:deb)
+    run_package_build deb
+    ;;
+  package:rpm)
+    run_package_build rpm
+    ;;
+  package:apk)
+    run_package_build apk
+    ;;
+  shell)    shift; run_shell "${1:-arch}" ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
 esac
+
+log "Log saved to $LOG_FILE"
