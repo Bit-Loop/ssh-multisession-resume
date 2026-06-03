@@ -1199,6 +1199,8 @@ test_package_builder_uses_git_pkgver_when_available() {
   assert_grep 'safe.directory=\${ROOT_DIR}' "$PACKAGE_BUILD"
   assert_grep 'repo_git rev-list --count HEAD' "$PACKAGE_BUILD"
   assert_grep 'repo_git rev-parse --short=7 HEAD' "$PACKAGE_BUILD"
+  assert_no_grep 'git describe' "$PACKAGE_BUILD"
+  assert_no_grep 'git describe' "$PKGBUILD"
 }
 
 test_docker_package_builds_install_git_for_pkgver() {
