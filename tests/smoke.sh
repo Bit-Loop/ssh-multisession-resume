@@ -1175,6 +1175,12 @@ test_package_builder_supports_expected_formats() {
   assert_grep 'abuild -F -d -r' "$PACKAGE_BUILD"
 }
 
+test_package_builder_uses_git_pkgver_when_available() {
+  test_case "packaging: package builder defaults to Git-derived pkgver"
+  assert_grep 'git -C "\$ROOT_DIR" rev-list --count HEAD' "$PACKAGE_BUILD"
+  assert_grep 'git -C "\$ROOT_DIR" rev-parse --short=7 HEAD' "$PACKAGE_BUILD"
+}
+
 # ============================================================
 # Run all tests
 # ============================================================
@@ -1255,6 +1261,7 @@ main() {
   test_pkgbuild_install_block_matches_files
   test_package_builder_declares_portable_architectures
   test_package_builder_supports_expected_formats
+  test_package_builder_uses_git_pkgver_when_available
 
   print_summary
 }

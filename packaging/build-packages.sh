@@ -8,7 +8,15 @@ PKG_REL="${SSH_MULTISESSION_PACKAGE_RELEASE:-1}"
 PKG_VERSION="${SSH_MULTISESSION_PACKAGE_VERSION:-}"
 
 if [[ -z "$PKG_VERSION" ]]; then
-  PKG_VERSION="$(awk -F= '$1 == "pkgver" { print $2; exit }' "${ROOT_DIR}/PKGBUILD")"
+  if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git -C "$ROOT_DIR" describe --long --tags --abbrev=7 >/dev/null 2>&1; then
+      PKG_VERSION="$(git -C "$ROOT_DIR" describe --long --tags --abbrev=7 | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g')"
+    else
+      PKG_VERSION="$(printf '0.r%s.g%s' "$(git -C "$ROOT_DIR" rev-list --count HEAD)" "$(git -C "$ROOT_DIR" rev-parse --short=7 HEAD)")"
+    fi
+  else
+    PKG_VERSION="$(awk -F= '$1 == "pkgver" { print $2; exit }' "${ROOT_DIR}/PKGBUILD")"
+  fi
 fi
 
 usage() {
