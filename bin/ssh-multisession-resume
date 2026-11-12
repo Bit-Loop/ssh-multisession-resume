@@ -36,12 +36,15 @@ Usage:
   ${cmd} sessions                       list managed tmux/screen sessions
   ${cmd} monitor [--interval SECS]      watch managed sessions
   ${cmd} policy show                    list saved per-IP choices
-  ${cmd} policy set IP MODE             save a choice (single|multi|skip)
+  ${cmd} policy set IP MODE             save a choice (single|multi|skip|per-client)
   ${cmd} policy move OLD_IP NEW_IP      move a saved choice to a new IP
   ${cmd} policy forget IP               drop the saved choice for IP
   ${cmd} policy clear                   drop all saved choices
-  ${cmd} opt-out                        disable the SSH menu for this user
-  ${cmd} opt-in                         re-enable the SSH menu for this user
+  ${cmd} menu show                     show first-login menu state
+  ${cmd} menu on                       enable the opt-in first-login menu
+  ${cmd} menu off                      disable it (default)
+  ${cmd} opt-out                        disable auto-resume for this user
+  ${cmd} opt-in                         re-enable auto-resume for this user
   ${cmd} detect-current                 print the current SSH client address
   ${cmd} deps                           check or install tmux/screen
 
@@ -53,9 +56,9 @@ Advanced / source-checkout commands:
   ${cmd} service-status                 show keepalive unit state
   ${cmd} service-rollback               remove keepalive unit
 
-When installed from the AUR package, no setup is needed. Just open a new SSH
-session, pick single / multi / skip in the menu, and your choice is remembered
-across reboots.
+No setup is needed. Logins default to a shared multi-session pool with no
+prompt. Enable the opt-in first-login menu with menu on to offer single /
+shared / skip / per-client choices per source IP.
 USAGE
 }
 
@@ -384,10 +387,17 @@ cmd_status() {
   require_file "$SSHD_MATCH_INSTALL"
   require_file "$RUNTIME_INSTALL"
 
-  echo "Server:"
+  echo "System hook:"
+  if [[ -r /etc/profile.d/ssh-multisession-resume.sh ]]; then
+    echo "  installed (/etc/profile.d/ssh-multisession-resume.sh)"
+  else
+    echo "  not installed"
+  fi
+  echo
+  echo "Scoped sshd Match (optional):"
   run_server_no_sudo status
   echo
-  echo "Client:"
+  echo "Per-user shell hook (optional):"
   run_client status
 }
 
@@ -471,10 +481,11 @@ cmd_doctor() {
   fi
 
   if [[ "${SSH_AUTO_RESUME:-}" == "1" || "${SCREEN_KILL_ON_HANGUP:-}" == "1" ]]; then
-    echo "  sshd match env: yes"
+    echo "  hook env: yes"
+  elif [[ -r /etc/profile.d/ssh-multisession-resume.sh ]]; then
+    echo "  hook env: system hook installed"
   else
-    echo "  sshd match env: no"
-    ok=0
+    echo "  hook env: no"
   fi
 
   if [[ -n "${TMUX:-}" ]]; then
@@ -548,13 +559,52 @@ policy_optout_path() {
   printf '%s/opt-out\n' "$(policy_dir)"
 }
 
+menu_config_path() {
+  printf '%s/menu\n' "$(policy_dir)"
+}
+
+cmd_menu() {
+  local sub="${1:-show}" path
+  path="$(menu_config_path)"
+  case "$sub" in
+    show|status)
+      if [[ -r "$path" ]]; then
+        echo "menu: on (${path})"
+      else
+        echo "menu: off (default)"
+      fi
+      ;;
+    on|enable|1)
+      mkdir -p "$(policy_dir)"
+      chmod 700 "$(policy_dir)" 2>/dev/null || true
+      printf '%s\n' "1" > "$path"
+      echo "Menu enabled: ${path}"
+      echo "New source IPs will get the option menu on first connect."
+      ;;
+    off|disable|0)
+      if [[ -f "$path" ]]; then
+        rm -f "$path"
+        echo "Menu disabled (removed ${path})"
+      else
+        echo "Menu already off (default)"
+      fi
+      ;;
+    -h|--help)
+      echo "Usage: $(operator_command) menu show|on|off"
+      ;;
+    *)
+      die "Usage: $(operator_command) menu show|on|off"
+      ;;
+  esac
+}
+
 sanitize_ip_for_path() {
   printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'
 }
 
 valid_policy_mode() {
   case "$1" in
-    single|multi|skip) return 0 ;;
+    single|multi|skip|per-client) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -593,8 +643,8 @@ cmd_policy() {
       ;;
     set)
       local ip="${1:-}" mode="${2:-}"
-      [[ -n "$ip" && -n "$mode" ]] || die "Usage: $(operator_command) policy set IP single|multi|skip"
-      valid_policy_mode "$mode" || die "Invalid mode: ${mode} (use single, multi, or skip)"
+      [[ -n "$ip" && -n "$mode" ]] || die "Usage: $(operator_command) policy set IP single|multi|skip|per-client"
+      valid_policy_mode "$mode" || die "Invalid mode: ${mode} (use single, multi, skip, or per-client)"
       local safe choices_dir
       safe="$(sanitize_ip_for_path "$ip")"
       [[ -n "$safe" ]] || die "Empty IP after sanitization."
@@ -659,7 +709,7 @@ cmd_opt_out() {
   chmod 700 "$dir" 2>/dev/null || true
   : > "$path"
   echo "Opt-out marker written: ${path}"
-  echo "New SSH sessions for this user will skip the auto-resume menu."
+  echo "New SSH sessions for this user will skip auto-resume."
 }
 
 cmd_opt_in() {
@@ -685,6 +735,14 @@ cmd_summary() {
     echo "  system hook: not installed at ${hook_path}"
     echo "                (install the AUR package, or run \`$(operator_command) apply\` for"
     echo "                 a per-user shell hook from a source checkout)"
+  fi
+
+  local menu_path
+  menu_path="$(menu_config_path)"
+  if [[ -r "$menu_path" ]]; then
+    echo "  first-login menu: on (opt-in)"
+  else
+    echo "  first-login menu: off (default)"
   fi
 
   if command -v tmux >/dev/null 2>&1; then
@@ -731,8 +789,8 @@ cmd_summary() {
   echo
   echo "Next steps:"
   if [[ -r "$hook_path" ]]; then
-    echo "  Just SSH in from a new client. The menu will appear on first connect"
-    echo "  and your choice will be remembered. Run \`$(operator_command) doctor\`"
+    echo "  Just SSH in from a new client. It will attach to the shared multi-"
+    echo "  session pool (ssh-resume-0, ssh-resume-1, ...). Run \`$(operator_command) doctor\`"
     echo "  inside the SSH session to verify it landed in a managed tmux session."
   else
     echo "  Install the AUR package, or run \`$(operator_command) apply\` from this"
@@ -778,6 +836,9 @@ case "$ACTION" in
     ;;
   policy)
     cmd_policy "$@"
+    ;;
+  menu)
+    cmd_menu "$@"
     ;;
   opt-out)
     cmd_opt_out "$@"

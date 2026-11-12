@@ -31,15 +31,22 @@ cd ssh-multisession-resume
 
 ## First SSH Login
 
-The first interactive login from each source IP asks:
+New logins default to `multi` without prompting. Every source IP shares the
+same session pool: a reconnect from any IP attaches to the first free slot,
+and concurrent logins get additional slots.
 
 | Mode | Behavior |
 | --- | --- |
 | `single` | Always return to one persistent terminal |
-| `multi` | Keep parallel SSH logins separate |
+| `multi` | Shared global pool with concurrent slots (default) |
 | `skip` | Leave that source alone |
+| `per-client` | Separate `ip-<source>-N` pool per source IP |
 
-Choices live in `~/.config/ssh-multisession-resume/choices/`.
+The first-login menu is **off by default**. Enable it with
+`ssh-multisession-resume menu on` to let each new source IP pick a mode,
+including `per-client`; disable it again with `menu off`. Choices are saved in
+`~/.config/ssh-multisession-resume/choices/` and can also be set directly with
+`ssh-multisession-resume policy set`.
 
 ## Commands
 
@@ -49,6 +56,9 @@ ssh-multisession-resume doctor
 ssh-multisession-resume sessions
 ssh-multisession-resume policy show
 ssh-multisession-resume policy move OLD_IP NEW_IP
+ssh-multisession-resume menu on
+ssh-multisession-resume menu off
+ssh-multisession-resume menu show
 ssh-multisession-resume opt-out
 ```
 

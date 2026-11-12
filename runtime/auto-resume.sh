@@ -301,7 +301,7 @@ _ssh_auto_resume_main() {
     [ -f "$_ssh_auto_resume_choice_file" ] || return 1
     IFS= read -r _ssh_auto_resume_choice < "$_ssh_auto_resume_choice_file" || return 1
     case "$_ssh_auto_resume_choice" in
-      single|multi|skip) return 0 ;;
+      single|multi|skip|per-client) return 0 ;;
       *) _ssh_auto_resume_choice=""; return 1 ;;
     esac
   }
@@ -313,6 +313,23 @@ _ssh_auto_resume_main() {
     printf '%s\n' "$2" > "$(_ssh_auto_resume_choice_path "$1")"
   }
 
+  _ssh_auto_resume_menu_enabled() {
+    case "${SSH_AUTO_RESUME_MENU:-}" in
+      1|on|yes|true) return 0 ;;
+      0|off|no|false) return 1 ;;
+      '') ;;
+      *) return 1 ;;
+    esac
+
+    _ssh_auto_resume_menu_cfg="$(_ssh_auto_resume_policy_dir)/menu"
+    [ -r "$_ssh_auto_resume_menu_cfg" ] || return 1
+    IFS= read -r _ssh_auto_resume_menu_value < "$_ssh_auto_resume_menu_cfg" || return 1
+    case "$_ssh_auto_resume_menu_value" in
+      1|on|yes|true) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+
   _ssh_auto_resume_menu() {
     _ssh_auto_resume_menu_ip="$1"
     _ssh_auto_resume_choice=""
@@ -321,9 +338,10 @@ _ssh_auto_resume_main() {
     printf '\n'
     printf '  SSH multi-session resume - first connect from %s\n' "$_ssh_auto_resume_menu_ip"
     printf '\n'
-    printf '    [1] single  one persistent session shared across reconnects\n'
-    printf '    [2] multi   fresh session per connect; concurrent slots OK\n'
-    printf '    [3] skip    plain shell; do not auto-attach this source\n'
+    printf '    [1] single      one persistent terminal (shared)\n'
+    printf '    [2] shared     global multi-session pool (default)\n'
+    printf '    [3] skip       plain shell; do not auto-attach this source\n'
+    printf '    [4] per-client separate session pool per source IP\n'
     printf '\n'
     printf '  Choice is remembered. Change later via:\n'
     printf '    ssh-multisession-resume policy set %s <mode>\n' "$_ssh_auto_resume_menu_ip"
@@ -332,7 +350,7 @@ _ssh_auto_resume_main() {
 
     _ssh_auto_resume_menu_attempts=0
     while [ "$_ssh_auto_resume_menu_attempts" -lt 3 ]; do
-      printf 'Select 1/2/3 [default 2-multi]: '
+      printf 'Select 1/2/3/4 [default 2-shared]: '
       if ! IFS= read -r _ssh_auto_resume_menu_input; then
         printf '\n'
         _ssh_auto_resume_choice="skip"
@@ -340,9 +358,10 @@ _ssh_auto_resume_main() {
       fi
       case "$_ssh_auto_resume_menu_input" in
         1|single|s|S) _ssh_auto_resume_choice="single"; return 0 ;;
-        ''|2|multi|m|M) _ssh_auto_resume_choice="multi"; return 0 ;;
+        ''|2|multi|m|M|shared) _ssh_auto_resume_choice="multi"; return 0 ;;
         3|skip|n|N|q|Q) _ssh_auto_resume_choice="skip"; return 0 ;;
-        *) printf '  (enter 1, 2, or 3)\n' ;;
+        4|per-client|p|P|client) _ssh_auto_resume_choice="per-client"; return 0 ;;
+        *) printf '  (enter 1, 2, 3, or 4)\n' ;;
       esac
       _ssh_auto_resume_menu_attempts=$((_ssh_auto_resume_menu_attempts + 1))
     done
@@ -369,7 +388,6 @@ _ssh_auto_resume_main() {
   _ssh_auto_resume_prefix="${SSH_AUTO_RESUME_SESSION_PREFIX:-ssh-resume}"
   _ssh_auto_resume_socket_name="${_ssh_auto_resume_prefix}-${_ssh_auto_resume_user}"
   _ssh_auto_resume_source="$(_ssh_auto_resume_sanitize "$(_ssh_auto_resume_source)")"
-  _ssh_auto_resume_session_base="ip-${_ssh_auto_resume_source}"
   _ssh_auto_resume_runtime="$(_ssh_auto_resume_runtime_dir)" || return 0
   if [ -z "${TMUX_TMPDIR:-}" ]; then
     TMUX_TMPDIR="$_ssh_auto_resume_runtime"
@@ -379,18 +397,27 @@ _ssh_auto_resume_main() {
   _ssh_auto_resume_reservation_dir="${_ssh_auto_resume_runtime}/${_ssh_auto_resume_socket_name}.reservations"
   _ssh_auto_resume_reservation=""
 
-  # Explicit override wins; else load saved choice; else prompt+save.
+  # Explicit override wins; else load saved choice; else the opt-in menu (off
+  # by default); else default to multi (shared pool, no prompt).
   if [ -n "${SSH_AUTO_RESUME_MODE:-}" ]; then
     case "$SSH_AUTO_RESUME_MODE" in
-      single|multi|skip) _ssh_auto_resume_mode="$SSH_AUTO_RESUME_MODE" ;;
+      single|multi|skip|per-client) _ssh_auto_resume_mode="$SSH_AUTO_RESUME_MODE" ;;
       *) _ssh_auto_resume_mode="multi" ;;
     esac
   elif _ssh_auto_resume_read_choice "$_ssh_auto_resume_source"; then
     _ssh_auto_resume_mode="$_ssh_auto_resume_choice"
-  else
+  elif _ssh_auto_resume_menu_enabled; then
     _ssh_auto_resume_menu "$_ssh_auto_resume_source"
     _ssh_auto_resume_mode="$_ssh_auto_resume_choice"
     _ssh_auto_resume_save_choice "$_ssh_auto_resume_source" "$_ssh_auto_resume_mode" || true
+  else
+    _ssh_auto_resume_mode="multi"
+  fi
+
+  if [ "$_ssh_auto_resume_mode" = "per-client" ]; then
+    _ssh_auto_resume_session_base="ip-${_ssh_auto_resume_source}"
+  else
+    _ssh_auto_resume_session_base="${_ssh_auto_resume_prefix}"
   fi
 
   if [ "$_ssh_auto_resume_mode" = "skip" ]; then
@@ -449,5 +476,6 @@ if [ "${SSH_AUTO_RESUME_KEEP_FUNCTIONS:-0}" != "1" ]; then
     _ssh_auto_resume_choice_path \
     _ssh_auto_resume_read_choice \
     _ssh_auto_resume_save_choice \
+    _ssh_auto_resume_menu_enabled \
     _ssh_auto_resume_menu 2>/dev/null || true
 fi

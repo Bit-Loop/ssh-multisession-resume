@@ -219,6 +219,33 @@ shell_quote() {
   printf "'%s'" "$(printf '%s' "$value" | sed "s/'/'\\\\''/g")"
 }
 
+tmux_runtime_dir() {
+  if [[ -n "${TMUX_TMPDIR:-}" ]]; then
+    printf '%s\n' "$TMUX_TMPDIR"
+    return 0
+  fi
+
+  if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "${XDG_RUNTIME_DIR}" && -w "${XDG_RUNTIME_DIR}" ]]; then
+    printf '%s\n' "$XDG_RUNTIME_DIR"
+    return 0
+  fi
+
+  local fallback="/run/user/$(id -u)"
+  if [[ -d "$fallback" && -w "$fallback" ]]; then
+    printf '%s\n' "$fallback"
+    return 0
+  fi
+
+  printf '%s\n' "/tmp"
+}
+
+ensure_tmux_tmpdir() {
+  if [[ -z "${TMUX_TMPDIR:-}" ]]; then
+    TMUX_TMPDIR="$(tmux_runtime_dir)"
+    export TMUX_TMPDIR
+  fi
+}
+
 describe_slot_name() {
   local name="$1"
   local source="-"
@@ -231,6 +258,16 @@ describe_slot_name() {
 
   if [[ "$name" == "main" ]]; then
     printf 'source=legacy slot=0 kind=session'
+    return 0
+  fi
+
+  if [[ "$name" == "$(socket_name)" ]]; then
+    printf 'source=global slot=0 kind=session'
+    return 0
+  fi
+
+  if [[ "$name" =~ ^ssh-resume-([0-9]+)$ ]]; then
+    printf 'source=global slot=%s kind=session' "${BASH_REMATCH[1]}"
     return 0
   fi
 
@@ -284,6 +321,12 @@ cmd_rollback() {
 
 cmd_status() {
   local file
+
+  if [[ -r /etc/profile.d/ssh-multisession-resume.sh ]]; then
+    echo "system hook: installed (/etc/profile.d/ssh-multisession-resume.sh)"
+  else
+    echo "system hook: not installed"
+  fi
 
   echo "apply targets:"
   while IFS= read -r file; do
@@ -347,6 +390,7 @@ cmd_sessions() {
   local name attached windows state session_field rest tmux_sessions=""
   local printed=0
 
+  ensure_tmux_tmpdir
   socket="$(socket_name)"
   echo "managed socket: ${socket}"
 
@@ -378,7 +422,7 @@ cmd_sessions() {
     while read -r session_field rest; do
       [[ "${session_field:-}" == *.* ]] || continue
       name="${session_field#*.}"
-      [[ "$name" == "$(socket_name)" || "$name" =~ ^ip-(.+)-([0-9]+)$ ]] || continue
+      [[ "$name" == "$(socket_name)" || "$name" =~ ^ssh-resume-[0-9]+$ || "$name" =~ ^ip-(.+)-([0-9]+)$ ]] || continue
       state="unknown"
       [[ "${rest:-}" == *"(Attached)"* ]] && state="attached"
       [[ "${rest:-}" == *"(Detached)"* ]] && state="detached"
@@ -409,6 +453,7 @@ write_service_file() {
 Description=SSH auto-resume tmux keepalive
 
 [Service]
+Environment=TMUX_TMPDIR=%t
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/sh -lc $(shell_quote "$start_cmd")

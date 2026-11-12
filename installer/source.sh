@@ -316,7 +316,8 @@ cmd_install() {
   install_files
   echo
   echo "Install complete."
-  echo "Open a new SSH session, pick single / multi / skip, then run: ${NAME} doctor"
+  echo "Open a new SSH session; it will join the shared multi-session pool."
+  echo "Then run: ${NAME} doctor"
 }
 
 safe_remove_lib_dir() {

@@ -141,8 +141,8 @@ assert_single_managed_slot() {
   local count
 
   sessions="$(managed_tmux_sessions)"
-  count="$(printf '%s\n' "$sessions" | grep -Ec '^ip-127_0_0_1-[0-9]+:' || true)"
-  if [[ "$count" == "1" ]] && printf '%s\n' "$sessions" | grep -q '^ip-127_0_0_1-0:'; then
+  count="$(printf '%s\n' "$sessions" | grep -Ec '^ssh-resume-[0-9]+:' || true)"
+  if [[ "$count" == "1" ]] && printf '%s\n' "$sessions" | grep -q '^ssh-resume-0:'; then
     log "PASS: $label"
   else
     fail "$label failed; sessions: ${sessions:-<none>}; ssh output: $(cat "$out")"

@@ -495,6 +495,13 @@ test_read_choice_valid_modes() {
     _ssh_auto_resume_read_choice "198.51.100.7" || exit 1
     [[ "$_ssh_auto_resume_choice" == "skip" ]] || exit 1
   ' || fail "skip not read"
+
+  printf 'per-client\n' > "${home}/.config/ssh-multisession-resume/choices/198.51.100.7"
+  HOME="$home" AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_read_choice "198.51.100.7" || exit 1
+    [[ "$_ssh_auto_resume_choice" == "per-client" ]] || exit 1
+  ' || fail "per-client not read"
 }
 
 test_read_choice_rejects_garbage_and_missing() {
@@ -543,7 +550,7 @@ test_menu_non_tty_returns_skip() {
 }
 
 test_menu_digit_input_maps_to_modes() {
-  test_case "menu: digit input 1/2/3 maps to single/multi/skip"
+  test_case "menu: digit input 1/2/3/4 maps to single/multi/skip/per-client"
   local result
   result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
     . "$AUTO_RESUME"
@@ -565,6 +572,13 @@ test_menu_digit_input_maps_to_modes() {
     printf "%s\n" "$_ssh_auto_resume_choice"
   ')"
   assert_eq "$result" "skip" "digit 3 -> skip"
+
+  result="$(AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_menu "1.2.3.4" >/dev/null <<<"4"
+    printf "%s\n" "$_ssh_auto_resume_choice"
+  ')"
+  assert_eq "$result" "per-client" "digit 4 -> per-client"
 }
 
 test_menu_default_empty_returns_multi() {
@@ -612,6 +626,51 @@ test_menu_invalid_then_valid() {
     printf "%s\n" "$_ssh_auto_resume_choice"
   ')"
   assert_eq "$result" "single" "retry path accepted"
+}
+
+test_menu_disabled_by_default() {
+  test_case "menu: opt-in is off by default (no env, no config)"
+  local home result
+  home="$(mktemp_d_in_tests)"
+  result="$(HOME="$home" XDG_CONFIG_HOME="${home}/.config" AUTO_RESUME="$AUTO_RESUME" \
+            SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    if _ssh_auto_resume_menu_enabled; then printf "on\n"; else printf "off\n"; fi
+  ')"
+  assert_eq "$result" "off" "menu disabled without opt-in"
+
+  test_case "menu: config file enables it; explicit env 0 overrides"
+  mkdir -p "${home}/.config/ssh-multisession-resume"
+  printf '1\n' > "${home}/.config/ssh-multisession-resume/menu"
+  result="$(HOME="$home" XDG_CONFIG_HOME="${home}/.config" AUTO_RESUME="$AUTO_RESUME" \
+            SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    if _ssh_auto_resume_menu_enabled; then printf "on\n"; else printf "off\n"; fi
+  ')"
+  assert_eq "$result" "on" "config file enables menu"
+
+  result="$(HOME="$home" XDG_CONFIG_HOME="${home}/.config" AUTO_RESUME="$AUTO_RESUME" \
+            SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 SSH_AUTO_RESUME_MENU=0 bash -c '
+    . "$AUTO_RESUME"
+    if _ssh_auto_resume_menu_enabled; then printf "on\n"; else printf "off\n"; fi
+  ')"
+  assert_eq "$result" "off" "SSH_AUTO_RESUME_MENU=0 overrides config"
+}
+
+test_cli_menu_toggle() {
+  test_case "cli: menu on/off/show toggles the opt-in marker"
+  local home out
+  home="$(mktemp_d_in_tests)"
+  out="$(mktemp_in_tests)"
+  HOME="$home" "$ROOT_INSTALL" menu show > "$out" 2>&1
+  assert_grep 'menu: off \(default\)' "$out"
+  HOME="$home" "$ROOT_INSTALL" menu on > "$out" 2>&1
+  assert_grep 'Menu enabled' "$out"
+  HOME="$home" "$ROOT_INSTALL" menu show > "$out" 2>&1
+  assert_grep 'menu: on' "$out"
+  HOME="$home" "$ROOT_INSTALL" menu off > "$out" 2>&1
+  assert_grep 'Menu disabled' "$out"
+  assert_file_missing "${home}/.config/ssh-multisession-resume/menu"
 }
 
 # ============================================================
@@ -672,6 +731,9 @@ test_cli_help_lists_new_commands() {
   assert_grep 'policy forget IP' "$out"
   assert_grep 'opt-out' "$out"
   assert_grep 'opt-in' "$out"
+  assert_grep 'menu show' "$out"
+  assert_grep 'menu on' "$out"
+  assert_grep 'menu off' "$out"
 
   SSH_MULTISESSION_RESUME_COMMAND=ssh-multisession-resume "$ROOT_INSTALL" --help > "$out"
   assert_grep '^  ssh-multisession-resume doctor' "$out"
@@ -731,7 +793,7 @@ test_cli_policy_move_switches_ip() {
 }
 
 test_cli_policy_set_rejects_invalid_mode() {
-  test_case "cli: policy set rejects modes outside {single,multi,skip}"
+  test_case "cli: policy set rejects modes outside {single,multi,skip,per-client}"
   local home
   home="$(mktemp_d_in_tests)"
   expect_failure env HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" policy set 1.2.3.4 bogus
@@ -886,7 +948,7 @@ test_mode_env_override_precedence() {
     # Simulate that main resolved the mode by reading override + saved.
     if [ -n "${SSH_AUTO_RESUME_MODE:-}" ]; then
       case "$SSH_AUTO_RESUME_MODE" in
-        single|multi|skip) printf "%s\n" "$SSH_AUTO_RESUME_MODE" ;;
+        single|multi|skip|per-client) printf "%s\n" "$SSH_AUTO_RESUME_MODE" ;;
         *) printf "multi\n" ;;
       esac
     fi
@@ -1106,7 +1168,7 @@ test_root_apply_emits_postinstall_hint() {
   assert_grep '^Match Address 100\.101\.137\.20$' "$conf"
   assert_grep 'auto-resume.sh' "${home}/.bash_profile"
 
-  HOME="$home" SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
+  HOME="$home" SSH_AUTO_RESUME_SKIP_SYSTEMD=1 SSHD_CONFIG_FILE="$conf" SSH_SCREEN_KILL_SKIP_SSHD_VALIDATE=1 SSH_SCREEN_KILL_NO_RELOAD=1 \
     "$ROOT_INSTALL" rollback >/dev/null
   assert_no_grep 'ssh-auto-resume' "$conf"
   assert_file_missing "${home}/.bash_profile"
@@ -1286,6 +1348,8 @@ main() {
   test_menu_default_empty_returns_multi
   test_menu_alias_keys
   test_menu_invalid_then_valid
+  test_menu_disabled_by_default
+  test_cli_menu_toggle
 
   test_tmux_conf_pins_update_environment
 

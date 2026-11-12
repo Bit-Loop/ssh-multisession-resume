@@ -49,17 +49,21 @@ postinstall_message() {
   cat <<'EOF'
 ssh-multisession-resume installed.
 
-Nothing to configure. Open a new SSH session from any source IP. On the
-first connect, a menu will ask whether to use single / multi / skip mode;
-your choice is saved per source IP and persists across reboots.
+Nothing to configure. Open a new SSH session from any source IP. Logins
+default to multi mode and share one session pool, so reconnects from any
+IP resume the same slots. Override a source with `policy set` if needed.
+The first-login menu is off by default; enable it with `menu on` to offer
+a per-client session mode.
 
 Optional commands:
   ssh-multisession-resume               status + saved policies
   ssh-multisession-resume doctor        diagnose the current session
   ssh-multisession-resume policy show   list saved per-IP choices
-  ssh-multisession-resume opt-out       disable the menu for this user
+  ssh-multisession-resume menu on       enable the opt-in first-login menu
+  ssh-multisession-resume menu off      disable it (default)
+  ssh-multisession-resume opt-out       disable auto-resume for this user
 
-Tip: the menu is shown by /etc/profile.d/ssh-multisession-resume.sh for any
+Tip: the hook is /etc/profile.d/ssh-multisession-resume.sh for any
 interactive SSH login. To disable system-wide, remove that file.
 EOF
 }
@@ -91,8 +95,8 @@ Maintainer: bit-loop <isaiah.fpga@gmail.com>
 Depends: bash, openssh-client, openssh-server, tmux, screen
 Homepage: https://github.com/Bit-Loop/${PKG_NAME}
 Description: Persistent multi-session SSH auto-resume utility backed by tmux
- Opens a menu on interactive SSH login and resumes saved tmux sessions by
- source IP. User choices are saved under ~/.config/ssh-multisession-resume.
+ Resumes tmux sessions for interactive SSH logins using a shared multi-session
+ slot pool. Explicit overrides are saved under ~/.config/ssh-multisession-resume.
 EOF
   {
     printf '%s\n' '#!/bin/sh'
@@ -131,8 +135,9 @@ Requires:       tmux
 Requires:       screen
 
 %description
-Opens a menu on interactive SSH login and resumes saved tmux sessions by
-source IP. User choices are saved under ~/.config/ssh-multisession-resume.
+Opens a shared multi-session tmux pool on interactive SSH login and resumes
+it across reconnects. Explicit overrides are saved under
+~/.config/ssh-multisession-resume.
 
 %install
 rm -rf %{buildroot}
