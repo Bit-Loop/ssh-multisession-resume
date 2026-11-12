@@ -2,6 +2,22 @@
 
 ## Unreleased / main
 
+- Native terminal scrollback, mouse/trackpad & TUI ergonomics
+  (`runtime/tmux-auto-resume.conf`, `runtime/screen-auto-resume.screenrc`,
+  `ssh-multisession-resume reload`):
+  - Context-aware `WheelUpPane` / `WheelDownPane` routing: forwards real mouse
+    wheel events directly into mouse-aware TUIs (`opencode`, `nvim`, `htop`,
+    `nano -m`), emulates native 3-line alternate-scroll in full-screen apps
+    without mouse tracking (`nano`, `less`, `man`), and scrolls the 200,000-line
+    history buffer via `copy-mode -e` (auto-exiting at bottom) for normal shell
+    and `cat` output.
+  - Added `Shift+PageUp` / `Shift+PageDown` scrollback bindings, OSC 52
+    clipboard sync (`set-clipboard on`), `10ms` `escape-time`, `focus-events`,
+    24-bit TrueColor overrides, optional `~/.config/ssh-multisession-resume/tmux.conf`
+    user hook, and `altscreen on` + `ti@:te@` in fallback `screenrc`.
+  - Live config sync on attach and `ssh-multisession-resume reload` so running
+    `tmux` servers pick up upgrades without restarting or disturbing active
+    sessions.
 - Interactive Session Picker & Live Preview (`runtime/session-manager.sh`,
   `ssh-multisession-resume pick`, and automatic login picker when open sessions
   exist):

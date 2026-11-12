@@ -261,6 +261,9 @@ _ssh_auto_resume_main() {
     _ssh_auto_resume_status=0
     _ssh_auto_resume_unlock
     if [ -n "${SSH_AUTO_RESUME_TMUX_CONF:-}" ] && [ -r "$SSH_AUTO_RESUME_TMUX_CONF" ]; then
+      if tmux -L "$_ssh_auto_resume_socket_name" list-sessions >/dev/null 2>&1; then
+        tmux -L "$_ssh_auto_resume_socket_name" source-file "$SSH_AUTO_RESUME_TMUX_CONF" >/dev/null 2>&1 || true
+      fi
       tmux -L "$_ssh_auto_resume_socket_name" -f "$SSH_AUTO_RESUME_TMUX_CONF" new-session -A -s "$_ssh_auto_resume_selected"
       _ssh_auto_resume_status=$?
     else

@@ -34,6 +34,7 @@ Usage:
   ${cmd}                                show status and saved policies
   ${cmd} pick                           interactive session picker + preview
   ${cmd} picker show|auto|on|off        configure login session picker (default: auto)
+  ${cmd} reload                         live-reload tmux config (mouse/scrollback/TUI)
   ${cmd} doctor                         diagnose the current SSH session
   ${cmd} status                         show install + hook status
   ${cmd} sessions [list]                list sessions (active/open/cleared/empty)
@@ -148,15 +149,15 @@ run_client() {
 
 run_session_manager() {
   require_file "$SESSION_MANAGER"
-  local user home cur_ip=""
+  local user home cur_ip="" tmux_conf="${SCRIPT_DIR}/runtime/tmux-auto-resume.conf"
   user="$(target_client_user)"
   home="$(target_client_home "$user")"
   cur_ip="$(detect_current_ip 2>/dev/null || true)"
 
   if [[ "$user" != "$(id -un)" ]]; then
-    sudo -u "$user" env HOME="$home" USER="$user" SSH_AUTO_RESUME_CLIENT_IP="$cur_ip" bash "$SESSION_MANAGER" "$@"
+    sudo -u "$user" env HOME="$home" USER="$user" SSH_AUTO_RESUME_CLIENT_IP="$cur_ip" SSH_AUTO_RESUME_TMUX_CONF="$tmux_conf" bash "$SESSION_MANAGER" "$@"
   else
-    HOME="$home" SSH_AUTO_RESUME_CLIENT_IP="$cur_ip" bash "$SESSION_MANAGER" "$@"
+    HOME="$home" SSH_AUTO_RESUME_CLIENT_IP="$cur_ip" SSH_AUTO_RESUME_TMUX_CONF="$tmux_conf" bash "$SESSION_MANAGER" "$@"
   fi
 }
 
@@ -865,6 +866,9 @@ case "$ACTION" in
     ;;
   picker)
     run_session_manager picker "$@"
+    ;;
+  reload|reload-config)
+    run_session_manager reload-config "$@"
     ;;
   ip|ips)
     run_session_manager ip "$@"

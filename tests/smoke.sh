@@ -1806,6 +1806,87 @@ test_picker_ip_subscreen_and_session_drop() {
   TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
 }
 
+test_tmux_conf_native_mouse_scrollback_and_tui_bindings() {
+  test_case "tmux-conf: enables 200k history, native mouse/TUI scrolling, clipboard, and user override"
+  assert_grep '^altscreen on$' "$SCREENRC"
+  assert_grep '^defscrollback 200000$' "$SCREENRC"
+
+  if ! command -v tmux >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local home rt sock gopts sopts wopts keys
+  home="$(mktemp_d_in_tests)"
+  rt="$(mktemp_d_in_tests)"
+  chmod 700 "$rt"
+  sock="smoketest-tmuxconf-$$"
+
+  mkdir -p "${home}/.config/ssh-multisession-resume"
+  printf 'set-option -g @user_custom_hook active_ok\n' > "${home}/.config/ssh-multisession-resume/tmux.conf"
+
+  HOME="$home" XDG_CONFIG_HOME="" TMUX_TMPDIR="$rt" \
+    tmux -L "$sock" -f "$TMUX_CONF" new-session -d -s "conf-0"
+  sleep 0.2
+
+  gopts="$(TMUX_TMPDIR="$rt" tmux -L "$sock" show-options -g)"
+  sopts="$(TMUX_TMPDIR="$rt" tmux -L "$sock" show-options -s)"
+  wopts="$(TMUX_TMPDIR="$rt" tmux -L "$sock" show-window-options -g)"
+  assert_contains "$gopts" "history-limit 200000" "200k scrollback history configured"
+  assert_contains "$sopts" "escape-time 10" "low ESC latency configured for TUIs/editors"
+  assert_contains "$sopts" "set-clipboard on" "OSC 52 clipboard sync enabled"
+  assert_contains "$wopts" "alternate-screen on" "alternate-screen enabled"
+  assert_contains "$gopts" "@user_custom_hook active_ok" "optional ~/.config/ssh-multisession-resume/tmux.conf loaded"
+
+  if tmux -V | awk '{ sub(/^[^0-9]*/, "", $2); sub(/[^0-9.].*$/, "", $2); exit !($2 + 0 >= 2.4) }'; then
+    assert_contains "$gopts" "mouse on" "modern mouse mode enabled"
+    keys="$(TMUX_TMPDIR="$rt" tmux -L "$sock" list-keys -T root)"
+    assert_contains "$keys" "WheelUpPane" "WheelUpPane bound in root table"
+    assert_contains "$keys" "mouse_any_flag" "Wheel forwards to mouse-aware TUIs (opencode/nvim/htop)"
+    assert_contains "$keys" "alternate_on" "Wheel emulates alternate-scroll in nano/less/man"
+    assert_contains "$keys" "copy-mode -e" "Wheel enters auto-exiting scrollback copy-mode in normal shell"
+    assert_contains "$keys" "S-PPage" "Shift+PageUp bound for keyboard scrollback"
+  fi
+
+  TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+}
+
+test_cli_reload_live_updates_running_tmux_server() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    test_case "cli: reload live-updates running tmux server (skipped: tmux missing)"
+    return 0
+  fi
+  test_case "cli: reload applies tmux-auto-resume.conf to running server without disturbing sessions"
+  local home rt user prefix sock before after out names
+  home="$(mktemp_d_in_tests)"
+  rt="$(mktemp_d_in_tests)"
+  chmod 700 "$rt"
+  user="$(id -un)"
+  prefix="smoketest-reload-$$"
+  sock="${prefix}-${user}"
+
+  # Start a server with -f /dev/null so mouse is initially off and history-limit is default (2000)
+  TMUX_TMPDIR="$rt" tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-0" "sleep 30"
+  before="$(TMUX_TMPDIR="$rt" tmux -L "$sock" show-options -g)"
+  assert_contains "$before" "history-limit 2000" "server started without custom config"
+
+  out="$(HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    "$ROOT_INSTALL" reload)"
+  assert_contains "$out" "Reloaded tmux config on socket '${sock}'" "reload confirms live socket update"
+
+  sleep 0.2
+  after="$(TMUX_TMPDIR="$rt" tmux -L "$sock" show-options -g)"
+  assert_contains "$after" "history-limit 200000" "live server upgraded to 200k history-limit"
+  if tmux -V | awk '{ sub(/^[^0-9]*/, "", $2); sub(/[^0-9.].*$/, "", $2); exit !($2 + 0 >= 2.4) }'; then
+    assert_contains "$after" "mouse on" "live server upgraded to mouse on"
+  fi
+
+  names="$(TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}')"
+  assert_contains "$names" "${prefix}-0" "running session stayed alive across live config reload"
+
+  TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+}
+
 # ============================================================
 # Run all tests
 # ============================================================
@@ -1903,6 +1984,8 @@ main() {
   test_sessions_clean_and_drop_safety
   test_ip_management_store_label_transfer_drop_prune
   test_picker_ip_subscreen_and_session_drop
+  test_tmux_conf_native_mouse_scrollback_and_tui_bindings
+  test_cli_reload_live_updates_running_tmux_server
 
   print_summary
 }

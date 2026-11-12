@@ -2198,6 +2198,7 @@ sm_run_picker() {
       return 0
       ;;
     TAKEOVER)
+      sm_sync_tmux_config "$socket"
       tmux -L "$socket" detach-client -s "=${chosen_target}" 2>/dev/null || true
       [[ -n "$current_ip" ]] && sm_record_connect "$current_ip" "$chosen_target"
       if [[ -n "$current_sess" ]]; then
@@ -2207,6 +2208,7 @@ sm_run_picker() {
       fi
       ;;
     ATTACH)
+      sm_sync_tmux_config "$socket"
       [[ -n "$current_ip" ]] && sm_record_connect "$current_ip" "$chosen_target"
       if [[ -n "$current_sess" ]]; then
         tmux -L "$socket" switch-client -t "=${chosen_target}"
@@ -2215,9 +2217,9 @@ sm_run_picker() {
       fi
       ;;
     NEW)
-      local script_dir tmux_conf
-      script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-      tmux_conf="${SSH_AUTO_RESUME_TMUX_CONF:-${script_dir}/tmux-auto-resume.conf}"
+      local tmux_conf
+      tmux_conf="$(sm_tmux_conf_path)"
+      sm_sync_tmux_config "$socket"
       [[ -n "$current_ip" ]] && sm_record_connect "$current_ip" "$chosen_target"
       if [[ -n "$current_sess" ]]; then
         if [[ -r "$tmux_conf" ]]; then
@@ -2235,6 +2237,37 @@ sm_run_picker() {
       fi
       ;;
   esac
+}
+
+sm_tmux_conf_path() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  printf '%s\n' "${SSH_AUTO_RESUME_TMUX_CONF:-${script_dir}/tmux-auto-resume.conf}"
+}
+
+sm_sync_tmux_config() {
+  local socket="${1:-$(sm_socket_name)}"
+  local conf
+  conf="$(sm_tmux_conf_path)"
+  [[ -r "$conf" ]] || return 0
+  if tmux -L "$socket" list-sessions >/dev/null 2>&1; then
+    tmux -L "$socket" source-file "$conf" >/dev/null 2>&1 || true
+  fi
+}
+
+sm_cmd_reload_config() {
+  command -v tmux >/dev/null 2>&1 || sm_die "tmux is not installed."
+  sm_ensure_tmux_tmpdir
+  local socket conf
+  socket="$(sm_socket_name)"
+  conf="$(sm_tmux_conf_path)"
+  [[ -r "$conf" ]] || sm_die "Missing tmux config: ${conf}"
+  if ! tmux -L "$socket" list-sessions >/dev/null 2>&1; then
+    echo "No running managed tmux server on socket '${socket}' (config will apply automatically on next login)."
+    return 0
+  fi
+  tmux -L "$socket" source-file "$conf"
+  echo "Reloaded tmux config on socket '${socket}' from ${conf} (active sessions untouched)."
 }
 
 # ============================================================
@@ -2301,6 +2334,9 @@ sm_main() {
       ;;
     picker)
       sm_cmd_picker_config "$@"
+      ;;
+    reload|reload-config)
+      sm_cmd_reload_config "$@"
       ;;
     pick|preview|login-pick)
       if [[ "$action" == "login-pick" ]]; then

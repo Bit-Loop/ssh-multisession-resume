@@ -55,6 +55,30 @@ ssh-multisession-resume picker on     # always open on SSH login
 ssh-multisession-resume picker off    # silent first-free-slot attach
 ```
 
+## Native Terminal History, Mouse & TUI Scrolling
+
+Managed `tmux` sessions are preconfigured for a native terminal feel across
+full-screen TUIs, editors, pagers, and 200,000-line shell output:
+
+- **Mouse-aware TUIs (`opencode`, `nvim`, `htop`, `btop`, `nano -m`)**: mouse
+  wheel, trackpad scrolling, clicks, and drags forward directly into the TUI's
+  scrollable panes instead of cycling prompt history.
+- **Editors & pagers without mouse mode (`nano`, `less`, `man`, `git log`)**:
+  emulates native terminal alternate-scroll by scrolling 3 lines up/down per
+  wheel notch instead of trapping you in tmux `copy-mode`.
+- **Shell output & long logs (`cat`, build logs, inline CLI output)**: scrolling
+  up with the mouse wheel/trackpad or pressing `Shift+PageUp` / `Shift+PageDown`
+  smoothly browses the **200,000-line** scrollback buffer and automatically
+  exits back to the live prompt when you scroll down to the bottom.
+- **Clipboard, low-latency ESC & TrueColor**: OSC 52 clipboard sync
+  (`set-clipboard on`), `10ms` ESC responsiveness, `focus-events`, and 24-bit
+  TrueColor are enabled out of the box (hold `Shift` or `Option` while dragging
+  to use your local terminal's native text selection).
+- **Live upgrades & custom overrides**: config updates apply automatically to
+  already-running tmux servers on next attach or instantly via
+  `ssh-multisession-resume reload`, and optional personal overrides can be
+  placed in `~/.config/ssh-multisession-resume/tmux.conf`.
+
 ## Modes & First-Login Menu
 
 New logins default to `multi` without prompting:
@@ -95,6 +119,7 @@ under `~/.config/ssh-multisession-resume/` (`ips/` and `sessions/`):
 ```bash
 ssh-multisession-resume status
 ssh-multisession-resume doctor
+ssh-multisession-resume reload
 ssh-multisession-resume pick
 ssh-multisession-resume picker show
 ssh-multisession-resume sessions
