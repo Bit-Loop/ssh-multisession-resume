@@ -1887,6 +1887,96 @@ test_cli_reload_live_updates_running_tmux_server() {
   TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
 }
 
+test_picker_ctrl_c_and_double_hook_guard() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    test_case "picker: Ctrl+C clean exit and double-hook skip guard (skipped: tmux missing)"
+    return 0
+  fi
+  test_case "picker: Ctrl+C cancels prompts/sub-screens cleanly and prevents double login popup"
+  local home rt prefix user sock res_file
+  home="$(mktemp_d_in_tests)"
+  rt="$(mktemp_d_in_tests)"
+  res_file="$(mktemp_in_tests)"
+  chmod 700 "$rt"
+  prefix="smoketest-ctrlc"
+  user="uctrlc"
+  sock="${prefix}-${user}"
+  TEST_TMUX_SERVERS+=("${rt}|${sock}")
+
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-0" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"keep_alive_work\n\"; exec sleep 30'"
+  sleep 0.25
+
+  # 1. Direct Ctrl+C (\x03) in main picker exits 0 and writes SKIP|
+  printf '\x03' | HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+  assert_eq "$(cat "$res_file")" "SKIP|" "Ctrl+C exits picker cleanly with SKIP"
+
+  # 2. 'd' (drop prompt) -> Ctrl+C cancels drop (session survives!) -> 'i' (IP screen) -> Ctrl+C returns -> Ctrl+C exits!
+  printf 'd\x03i\x03\x03' | HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" SSH_AUTO_RESUME_CLIENT_IP="198.51.100.9" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+  assert_eq "$(cat "$res_file")" "SKIP|" "Ctrl+C backs out of drop prompt & IP screen then exits cleanly"
+
+  local names
+  names="$(TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}')"
+  assert_contains "$names" "${prefix}-0" "Ctrl+C on drop confirmation preserved detached session"
+
+  # 3. Verify _SSH_AUTO_RESUME_SKIPPED_PID guard stops /etc/zsh/zshrc from re-running after /etc/zsh/zprofile SKIP
+  local skip_check
+  skip_check="$(HOME="$home" AUTO_RESUME="$AUTO_RESUME" bash -c '
+    _SSH_AUTO_RESUME_SKIPPED_PID="$$"
+    SSH_AUTO_RESUME=1
+    SSH_CONNECTION="198.51.100.9 1234 10.0.0.1 22"
+    . "$AUTO_RESUME"
+    printf "still_skipped=%s\n" "$_SSH_AUTO_RESUME_SKIPPED_PID"
+  ')"
+  assert_contains "$skip_check" "still_skipped=" "same-PID skip guard remains intact across second hook source"
+
+  TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+}
+
+test_picker_responsive_width_and_horizontal_pan() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    test_case "picker: responsive width, SGR color preview, and horizontal pan (skipped: tmux missing)"
+    return 0
+  fi
+  test_case "picker: adapts to wide terminals (148 cols) and pans wide previews horizontally"
+  local home rt prefix user sock res_file ui_out
+  home="$(mktemp_d_in_tests)"
+  rt="$(mktemp_d_in_tests)"
+  res_file="$(mktemp_in_tests)"
+  ui_out="$(mktemp_in_tests)"
+  chmod 700 "$rt"
+  prefix="smoketest-wide"
+  user="uwide"
+  sock="${prefix}-${user}"
+  TEST_TMUX_SERVERS+=("${rt}|${sock}")
+
+  # Start a 170-column detached pane with colored output extending past column 150
+  local filler
+  printf -v filler '%*s' 115 ''
+  filler="${filler// /=}"
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -x 170 -y 30 -s "${prefix}-0" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"\033[1;32mLEFT_ANCHOR\033[0m ${filler} \033[1;36mRIGHT_EDGE_155\033[0m\n\"; exec sleep 30'"
+  sleep 0.25
+
+  # Render on a 140x32 terminal, pan right 3x (\e[C\e[C\e[C), then Ctrl+C out
+  printf '\e[C\e[C\e[C\x03' | \
+    HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" TERM="xterm-256color" COLUMNS=140 LINES=32 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi > "$ui_out"
+
+  assert_grep 'LEFT_ANCHOR' "$ui_out"
+  assert_grep 'RIGHT_EDGE_155' "$ui_out"
+  assert_grep 'pan \+6/142c' "$ui_out"
+
+  TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+}
+
 # ============================================================
 # Run all tests
 # ============================================================
@@ -1986,6 +2076,8 @@ main() {
   test_picker_ip_subscreen_and_session_drop
   test_tmux_conf_native_mouse_scrollback_and_tui_bindings
   test_cli_reload_live_updates_running_tmux_server
+  test_picker_ctrl_c_and_double_hook_guard
+  test_picker_responsive_width_and_horizontal_pan
 
   print_summary
 }

@@ -22,7 +22,13 @@
   `ssh-multisession-resume pick`, and automatic login picker when open sessions
   exist):
   - Navigate open detached sessions with arrow keys (`Up`/`Down` or `j`/`k`) or
-    select directly by typing a number (`1`–`9`), with live pane previews.
+    select directly by typing a number (`1`–`9`), with full-width ANSI-colored
+    live pane previews, horizontal `Left`/`Right` panning for wide panes, live
+    `SIGWINCH` resize reflow, synchronized flicker-free rendering, and subtle
+    non-blocking transitions.
+  - Clean `Ctrl+C` (`-isig`) & `Esc` handling across inline prompts, the IP
+    sub-screen, and Zsh login hooks (preventing duplicate `/etc/zsh/zshrc`
+    popups after skipping in `/etc/zsh/zprofile`).
   - Active-session privacy guard: attached or PID-reserved sessions are never
     captured or previewed (`capture-pane` is strictly skipped).
   - Configurable login behavior via `picker show|auto|on|off`.

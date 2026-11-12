@@ -46,9 +46,9 @@ if [ ! -r "${_ssh_multisession_resume_runtime}/auto-resume.sh" ]; then
 fi
 
 SSH_AUTO_RESUME=1
-SSH_AUTO_RESUME_TMUX_CONF="${_ssh_multisession_resume_runtime}/tmux-auto-resume.conf"
-SSH_AUTO_RESUME_SCREENRC="${_ssh_multisession_resume_runtime}/screen-auto-resume.screenrc"
-SSH_AUTO_RESUME_SESSION_PREFIX="ssh-resume"
+SSH_AUTO_RESUME_TMUX_CONF="${SSH_AUTO_RESUME_TMUX_CONF:-${_ssh_multisession_resume_runtime}/tmux-auto-resume.conf}"
+SSH_AUTO_RESUME_SCREENRC="${SSH_AUTO_RESUME_SCREENRC:-${_ssh_multisession_resume_runtime}/screen-auto-resume.screenrc}"
+SSH_AUTO_RESUME_SESSION_PREFIX="${SSH_AUTO_RESUME_SESSION_PREFIX:-ssh-resume}"
 export SSH_AUTO_RESUME SSH_AUTO_RESUME_TMUX_CONF SSH_AUTO_RESUME_SCREENRC SSH_AUTO_RESUME_SESSION_PREFIX
 
 # shellcheck source=/dev/null

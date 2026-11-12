@@ -423,6 +423,7 @@ _ssh_auto_resume_main() {
   [ -z "${TMUX:-}${STY:-}" ] || return 0
   [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || return 0
   [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] || return 0
+  [ "${_SSH_AUTO_RESUME_SKIPPED_PID:-}" != "$$" ] || return 0
 
   _ssh_auto_resume_user="$(printf '%s' "${USER:-user}" | tr -c 'A-Za-z0-9_.-' '_')"
   _ssh_auto_resume_prefix="${SSH_AUTO_RESUME_SESSION_PREFIX:-ssh-resume}"
@@ -478,13 +479,15 @@ _ssh_auto_resume_main() {
       : > "$_ssh_auto_resume_pick_file" 2>/dev/null || _ssh_auto_resume_pick_file=""
       if [ -n "$_ssh_auto_resume_pick_file" ]; then
         chmod 600 "$_ssh_auto_resume_pick_file" 2>/dev/null || true
-        if SSH_AUTO_RESUME_CLIENT_IP="$_ssh_auto_resume_raw_source" \
-             SSH_AUTO_RESUME_SESSION_PREFIX="$_ssh_auto_resume_prefix" \
-             TMUX_TMPDIR="$TMUX_TMPDIR" \
-             bash "$_ssh_auto_resume_mgr" login-pick \
-               --result-file "$_ssh_auto_resume_pick_file" \
-               --session-base "$_ssh_auto_resume_session_base" \
-               --mode "$_ssh_auto_resume_mode"; then
+        _ssh_auto_resume_pick_rc=0
+        SSH_AUTO_RESUME_CLIENT_IP="$_ssh_auto_resume_raw_source" \
+          SSH_AUTO_RESUME_SESSION_PREFIX="$_ssh_auto_resume_prefix" \
+          TMUX_TMPDIR="$TMUX_TMPDIR" \
+          bash "$_ssh_auto_resume_mgr" login-pick \
+            --result-file "$_ssh_auto_resume_pick_file" \
+            --session-base "$_ssh_auto_resume_session_base" \
+            --mode "$_ssh_auto_resume_mode" || _ssh_auto_resume_pick_rc=$?
+        if [ "$_ssh_auto_resume_pick_rc" -eq 0 ] || [ -s "$_ssh_auto_resume_pick_file" ]; then
           _ssh_auto_resume_pick_line=""
           IFS= read -r _ssh_auto_resume_pick_line < "$_ssh_auto_resume_pick_file" || true
           case "$_ssh_auto_resume_pick_line" in
@@ -493,12 +496,15 @@ _ssh_auto_resume_main() {
               _ssh_auto_resume_pick_target="${_ssh_auto_resume_pick_line#*|}"
               ;;
           esac
+        elif [ "$_ssh_auto_resume_pick_rc" -eq 130 ] || [ "$_ssh_auto_resume_pick_rc" -eq 143 ] || [ "$_ssh_auto_resume_pick_rc" -eq 129 ]; then
+          _ssh_auto_resume_pick_action="SKIP"
         fi
         rm -f "$_ssh_auto_resume_pick_file" 2>/dev/null || true
       fi
     fi
 
     if [ "$_ssh_auto_resume_pick_action" = "SKIP" ]; then
+      _SSH_AUTO_RESUME_SKIPPED_PID="$$"
       _ssh_auto_resume_record_connect ""
       return 0
     fi

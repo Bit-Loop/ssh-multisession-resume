@@ -35,17 +35,19 @@ Your very first SSH login opens `ssh-resume-0` immediately with no prompt.
 Whenever open managed sessions already exist on subsequent connects or new SSH
 instances, the interactive **Session Picker** appears automatically:
 
-- **Arrow keys (`Up`/`Down` or `j`/`k`)** browse detached sessions with a live
-  pane preview, or **type a number (`1`–`9`)** to jump straight in.
+- **Arrow keys (`Up`/`Down` or `j`/`k`)** browse detached sessions with a
+  full-width color live pane preview (`Left`/`Right` pans wide terminal output
+  horizontally), or **type a number (`1`–`9`)** to jump straight in.
 - **Active sessions are never previewed**: any currently attached session is
-  marked `[active - preview hidden]` and `capture-pane` is strictly skipped.
+  marked `active · preview hidden` and `capture-pane` is strictly skipped.
 - **Cleared & empty terminal detection**: single-pane idle shells with no
   running foreground or background child processes are automatically badged as
-  `[empty]` (fresh untouched shell) or `[cleared]` (`clear` / `Ctrl-L` shell)
+  `empty` (fresh untouched shell) or `cleared` (`clear` / `Ctrl-L` shell)
   so you can reuse or prune them in one keypress (`c`).
-- **Built-in IP & transfer controls**: press `t` to transfer/reclaim a session
-  whose old SSH connection went stale, `d` to drop a detached session, or `i`
-  to open the interactive **IP & Session Manager** directly from the picker.
+- **Built-in IP, transfer & clean exit controls**: press `t` to transfer/reclaim
+  a session whose old SSH connection went stale, `d` to drop a detached session,
+  `i` to open the interactive **IP & Session Manager**, or `q` / `Esc` / `Ctrl+C`
+  to exit cleanly to a plain shell.
 
 Configure login picker behavior anytime with:
 
