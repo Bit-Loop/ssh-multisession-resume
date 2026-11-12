@@ -100,8 +100,19 @@ _ssh_auto_resume_main() {
   _ssh_auto_resume_cleanup() {
     if [ -n "${_ssh_auto_resume_reservation:-}" ]; then
       rm -f "$_ssh_auto_resume_reservation"
+      _ssh_auto_resume_reservation=""
     fi
     _ssh_auto_resume_unlock
+    trap - EXIT HUP INT TERM
+  }
+
+  _ssh_auto_resume_tmux_has_exact() {
+    _ssh_auto_resume_names=""
+    if _ssh_auto_resume_names="$(tmux -L "$_ssh_auto_resume_socket_name" list-sessions -F '#{session_name}' 2>/dev/null)"; then
+      printf '%s\n' "$_ssh_auto_resume_names" | cut -d'|' -f1 | grep -Fxq "$1"
+      return $?
+    fi
+    tmux -L "$_ssh_auto_resume_socket_name" has-session -t "$1" 2>/dev/null
   }
 
   _ssh_auto_resume_tmux_attached() {
@@ -157,14 +168,14 @@ _ssh_auto_resume_main() {
     _ssh_auto_resume_max="${SSH_AUTO_RESUME_MAX_SLOTS:-64}"
 
     while [ "$_ssh_auto_resume_slot" -lt "$_ssh_auto_resume_max" ]; do
-      if [ "$_ssh_auto_resume_slot" -eq 0 ] && tmux -L "$_ssh_auto_resume_socket_name" has-session -t main 2>/dev/null; then
+      if [ "$_ssh_auto_resume_slot" -eq 0 ] && _ssh_auto_resume_tmux_has_exact main; then
         _ssh_auto_resume_candidate="main"
       else
         _ssh_auto_resume_candidate="${_ssh_auto_resume_session_base}-${_ssh_auto_resume_slot}"
       fi
 
       if ! _ssh_auto_resume_reserved "tmux-${_ssh_auto_resume_candidate}"; then
-        if tmux -L "$_ssh_auto_resume_socket_name" has-session -t "$_ssh_auto_resume_candidate" 2>/dev/null; then
+        if _ssh_auto_resume_tmux_has_exact "$_ssh_auto_resume_candidate"; then
           _ssh_auto_resume_attached="$(_ssh_auto_resume_tmux_attached "$_ssh_auto_resume_candidate")"
           if [ "${_ssh_auto_resume_attached:-0}" = "0" ]; then
             _ssh_auto_resume_selected="$_ssh_auto_resume_candidate"
@@ -370,6 +381,32 @@ _ssh_auto_resume_main() {
     return 0
   }
 
+  _ssh_auto_resume_find_manager() {
+    if [ -n "${SSH_AUTO_RESUME_SESSION_MANAGER:-}" ] && [ -r "${SSH_AUTO_RESUME_SESSION_MANAGER}" ]; then
+      printf '%s' "${SSH_AUTO_RESUME_SESSION_MANAGER}"
+      return 0
+    fi
+    for _ssh_auto_resume_ref in "${SSH_AUTO_RESUME_HELPER:-}" "${SSH_AUTO_RESUME_TMUX_CONF:-}" "${SSH_AUTO_RESUME_SCREENRC:-}"; do
+      if [ -n "$_ssh_auto_resume_ref" ]; then
+        _ssh_auto_resume_cand="$(dirname "$_ssh_auto_resume_ref")/session-manager.sh"
+        if [ -r "$_ssh_auto_resume_cand" ]; then
+          printf '%s' "$_ssh_auto_resume_cand"
+          return 0
+        fi
+      fi
+    done
+    return 1
+  }
+
+  _ssh_auto_resume_record_connect() {
+    if [ -n "${_ssh_auto_resume_mgr:-}" ] && command -v bash >/dev/null 2>&1; then
+      SSH_AUTO_RESUME_CLIENT_IP="$_ssh_auto_resume_raw_source" \
+        SSH_AUTO_RESUME_SESSION_PREFIX="$_ssh_auto_resume_prefix" \
+        TMUX_TMPDIR="$TMUX_TMPDIR" \
+        bash "$_ssh_auto_resume_mgr" record-connect "$_ssh_auto_resume_raw_source" "${1:-}" >/dev/null 2>&1 || true
+    fi
+  }
+
   if [ "${SSH_AUTO_RESUME:-}" != "1" ] && [ "${SCREEN_KILL_ON_HANGUP:-}" != "1" ]; then
     return 0
   fi
@@ -387,7 +424,8 @@ _ssh_auto_resume_main() {
   _ssh_auto_resume_user="$(printf '%s' "${USER:-user}" | tr -c 'A-Za-z0-9_.-' '_')"
   _ssh_auto_resume_prefix="${SSH_AUTO_RESUME_SESSION_PREFIX:-ssh-resume}"
   _ssh_auto_resume_socket_name="${_ssh_auto_resume_prefix}-${_ssh_auto_resume_user}"
-  _ssh_auto_resume_source="$(_ssh_auto_resume_sanitize "$(_ssh_auto_resume_source)")"
+  _ssh_auto_resume_raw_source="$(_ssh_auto_resume_source)"
+  _ssh_auto_resume_source="$(_ssh_auto_resume_sanitize "$_ssh_auto_resume_raw_source")"
   _ssh_auto_resume_runtime="$(_ssh_auto_resume_runtime_dir)" || return 0
   if [ -z "${TMUX_TMPDIR:-}" ]; then
     TMUX_TMPDIR="$_ssh_auto_resume_runtime"
@@ -396,6 +434,7 @@ _ssh_auto_resume_main() {
   _ssh_auto_resume_lock_dir="${_ssh_auto_resume_runtime}/${_ssh_auto_resume_socket_name}.slot.lock"
   _ssh_auto_resume_reservation_dir="${_ssh_auto_resume_runtime}/${_ssh_auto_resume_socket_name}.reservations"
   _ssh_auto_resume_reservation=""
+  _ssh_auto_resume_mgr="$(_ssh_auto_resume_find_manager 2>/dev/null || true)"
 
   # Explicit override wins; else load saved choice; else the opt-in menu (off
   # by default); else default to multi (shared pool, no prompt).
@@ -428,9 +467,62 @@ _ssh_auto_resume_main() {
   _ssh_auto_resume_prepare_term
 
   if command -v tmux >/dev/null 2>&1; then
+    _ssh_auto_resume_pick_action="AUTO"
+    _ssh_auto_resume_pick_target=""
+
+    if [ -n "$_ssh_auto_resume_mgr" ] && command -v bash >/dev/null 2>&1; then
+      _ssh_auto_resume_pick_file="${_ssh_auto_resume_runtime}/${_ssh_auto_resume_socket_name}.pick.$$"
+      : > "$_ssh_auto_resume_pick_file" 2>/dev/null || _ssh_auto_resume_pick_file=""
+      if [ -n "$_ssh_auto_resume_pick_file" ]; then
+        chmod 600 "$_ssh_auto_resume_pick_file" 2>/dev/null || true
+        if SSH_AUTO_RESUME_CLIENT_IP="$_ssh_auto_resume_raw_source" \
+             SSH_AUTO_RESUME_SESSION_PREFIX="$_ssh_auto_resume_prefix" \
+             TMUX_TMPDIR="$TMUX_TMPDIR" \
+             bash "$_ssh_auto_resume_mgr" login-pick \
+               --result-file "$_ssh_auto_resume_pick_file" \
+               --session-base "$_ssh_auto_resume_session_base" \
+               --mode "$_ssh_auto_resume_mode"; then
+          _ssh_auto_resume_pick_line=""
+          IFS= read -r _ssh_auto_resume_pick_line < "$_ssh_auto_resume_pick_file" || true
+          case "$_ssh_auto_resume_pick_line" in
+            *\|*)
+              _ssh_auto_resume_pick_action="${_ssh_auto_resume_pick_line%%|*}"
+              _ssh_auto_resume_pick_target="${_ssh_auto_resume_pick_line#*|}"
+              ;;
+          esac
+        fi
+        rm -f "$_ssh_auto_resume_pick_file" 2>/dev/null || true
+      fi
+    fi
+
+    if [ "$_ssh_auto_resume_pick_action" = "SKIP" ]; then
+      _ssh_auto_resume_record_connect ""
+      return 0
+    fi
+
     _ssh_auto_resume_lock || return 0
+
+    if [ "$_ssh_auto_resume_pick_action" = "TAKEOVER" ] && [ -n "$_ssh_auto_resume_pick_target" ]; then
+      tmux -L "$_ssh_auto_resume_socket_name" detach-client -s "=${_ssh_auto_resume_pick_target}" 2>/dev/null || true
+      _ssh_auto_resume_selected="$_ssh_auto_resume_pick_target"
+      _ssh_auto_resume_reserve "tmux-${_ssh_auto_resume_selected}"
+      _ssh_auto_resume_record_connect "$_ssh_auto_resume_selected"
+      _ssh_auto_resume_run_tmux
+    elif [ "$_ssh_auto_resume_pick_action" = "ATTACH" ] || [ "$_ssh_auto_resume_pick_action" = "NEW" ]; then
+      if [ -n "$_ssh_auto_resume_pick_target" ] && ! _ssh_auto_resume_reserved "tmux-${_ssh_auto_resume_pick_target}"; then
+        _ssh_auto_resume_pick_att="$(_ssh_auto_resume_tmux_attached "$_ssh_auto_resume_pick_target")"
+        if ! _ssh_auto_resume_tmux_has_exact "$_ssh_auto_resume_pick_target" || [ "${_ssh_auto_resume_pick_att:-0}" = "0" ]; then
+          _ssh_auto_resume_selected="$_ssh_auto_resume_pick_target"
+          _ssh_auto_resume_reserve "tmux-${_ssh_auto_resume_selected}"
+          _ssh_auto_resume_record_connect "$_ssh_auto_resume_selected"
+          _ssh_auto_resume_run_tmux
+        fi
+      fi
+    fi
+
     if _ssh_auto_resume_select_tmux; then
       _ssh_auto_resume_reserve "tmux-${_ssh_auto_resume_selected}"
+      _ssh_auto_resume_record_connect "$_ssh_auto_resume_selected"
       _ssh_auto_resume_run_tmux
     fi
     _ssh_auto_resume_cleanup
@@ -441,6 +533,7 @@ _ssh_auto_resume_main() {
     _ssh_auto_resume_lock || return 0
     if _ssh_auto_resume_select_screen; then
       _ssh_auto_resume_reserve "screen-${_ssh_auto_resume_selected}"
+      _ssh_auto_resume_record_connect "$_ssh_auto_resume_selected"
       _ssh_auto_resume_run_screen
     fi
     _ssh_auto_resume_cleanup
@@ -463,6 +556,7 @@ if [ "${SSH_AUTO_RESUME_KEEP_FUNCTIONS:-0}" != "1" ]; then
     _ssh_auto_resume_reserved \
     _ssh_auto_resume_reserve \
     _ssh_auto_resume_cleanup \
+    _ssh_auto_resume_tmux_has_exact \
     _ssh_auto_resume_tmux_attached \
     _ssh_auto_resume_has_term_checker \
     _ssh_auto_resume_term_usable \
@@ -477,5 +571,7 @@ if [ "${SSH_AUTO_RESUME_KEEP_FUNCTIONS:-0}" != "1" ]; then
     _ssh_auto_resume_read_choice \
     _ssh_auto_resume_save_choice \
     _ssh_auto_resume_menu_enabled \
-    _ssh_auto_resume_menu 2>/dev/null || true
+    _ssh_auto_resume_menu \
+    _ssh_auto_resume_find_manager \
+    _ssh_auto_resume_record_connect 2>/dev/null || true
 fi

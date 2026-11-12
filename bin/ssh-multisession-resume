@@ -11,6 +11,7 @@ else
 fi
 SSHD_MATCH_INSTALL="${SCRIPT_DIR}/sshd/match-install.sh"
 RUNTIME_INSTALL="${SCRIPT_DIR}/runtime/install.sh"
+SESSION_MANAGER="${SCRIPT_DIR}/runtime/session-manager.sh"
 PACKAGE_COMMAND="ssh-multisession-resume"
 
 operator_command() {
@@ -31,10 +32,21 @@ usage() {
   cat <<USAGE
 Usage:
   ${cmd}                                show status and saved policies
+  ${cmd} pick                           interactive session picker + preview
+  ${cmd} picker show|auto|on|off        configure login session picker (default: auto)
   ${cmd} doctor                         diagnose the current SSH session
   ${cmd} status                         show install + hook status
-  ${cmd} sessions                       list managed tmux/screen sessions
+  ${cmd} sessions [list]                list sessions (active/open/cleared/empty)
+  ${cmd} sessions clean [--cleared]     clean detached empty (or cleared) sessions
+  ${cmd} sessions drop SESSION          close a detached session
+  ${cmd} sessions transfer SESSION [IP] transfer session ownership [--detach]
   ${cmd} monitor [--interval SECS]      watch managed sessions
+  ${cmd} ip [show [IP]]                 list stored IPs, labels, and sessions
+  ${cmd} ip label IP LABEL              set a friendly device label for IP
+  ${cmd} ip unlabel IP                  clear device label for IP
+  ${cmd} ip transfer OLD_IP [NEW_IP]    transfer IP sessions + policy [--detach]
+  ${cmd} ip drop IP                     drop IP record (migrates per-client slots)
+  ${cmd} ip prune [--days N]            prune stale session/IP metadata
   ${cmd} policy show                    list saved per-IP choices
   ${cmd} policy set IP MODE             save a choice (single|multi|skip|per-client)
   ${cmd} policy move OLD_IP NEW_IP      move a saved choice to a new IP
@@ -56,9 +68,9 @@ Advanced / source-checkout commands:
   ${cmd} service-status                 show keepalive unit state
   ${cmd} service-rollback               remove keepalive unit
 
-No setup is needed. Logins default to a shared multi-session pool with no
-prompt. Enable the opt-in first-login menu with menu on to offer single /
-shared / skip / per-client choices per source IP.
+No setup is needed. Logins default to a shared multi-session pool. When open
+sessions already exist, the interactive picker previews detached terminals
+(active sessions are never previewed) so you can choose with arrow keys or 1-9.
 USAGE
 }
 
@@ -131,6 +143,20 @@ run_client() {
     sudo -u "$user" env HOME="$home" "$RUNTIME_INSTALL" "$@"
   else
     HOME="$home" "$RUNTIME_INSTALL" "$@"
+  fi
+}
+
+run_session_manager() {
+  require_file "$SESSION_MANAGER"
+  local user home cur_ip=""
+  user="$(target_client_user)"
+  home="$(target_client_home "$user")"
+  cur_ip="$(detect_current_ip 2>/dev/null || true)"
+
+  if [[ "$user" != "$(id -un)" ]]; then
+    sudo -u "$user" env HOME="$home" USER="$user" SSH_AUTO_RESUME_CLIENT_IP="$cur_ip" bash "$SESSION_MANAGER" "$@"
+  else
+    HOME="$home" SSH_AUTO_RESUME_CLIENT_IP="$cur_ip" bash "$SESSION_MANAGER" "$@"
   fi
 }
 
@@ -404,7 +430,7 @@ cmd_status() {
 cmd_sessions() {
   require_file "$RUNTIME_INSTALL"
 
-  run_client sessions
+  run_client sessions "$@"
 }
 
 cmd_monitor() {
@@ -489,7 +515,7 @@ cmd_doctor() {
   fi
 
   if [[ -n "${TMUX:-}" ]]; then
-    session_name="$(tmux display-message -p '#S' 2>/dev/null || true)"
+    session_name="$(tmux display-message ${TMUX_PANE:+-t "$TMUX_PANE"} -p '#S' 2>/dev/null || true)"
     [[ -n "$session_name" ]] || session_name="${TMUX}"
     echo "  inside tmux: yes (${session_name})"
     case "$TMUX" in
@@ -745,6 +771,12 @@ cmd_summary() {
     echo "  first-login menu: off (default)"
   fi
 
+  if [[ -r "$SESSION_MANAGER" ]]; then
+    local p_line=""
+    p_line="$(run_session_manager picker show 2>/dev/null || true)"
+    [[ -n "$p_line" ]] && echo "  session ${p_line}"
+  fi
+
   if command -v tmux >/dev/null 2>&1; then
     echo "  tmux: present"
   else
@@ -767,7 +799,7 @@ cmd_summary() {
   fi
   if [[ -n "${TMUX:-}" ]]; then
     local sname=""
-    sname="$(tmux display-message -p '#S' 2>/dev/null || true)"
+    sname="$(tmux display-message ${TMUX_PANE:+-t "$TMUX_PANE"} -p '#S' 2>/dev/null || true)"
     echo "  inside tmux: yes${sname:+ (${sname})}"
   fi
   if [[ -n "${STY:-}" ]]; then
@@ -827,6 +859,15 @@ case "$ACTION" in
     ;;
   sessions)
     cmd_sessions "$@"
+    ;;
+  pick|preview)
+    run_session_manager pick "$@"
+    ;;
+  picker)
+    run_session_manager picker "$@"
+    ;;
+  ip|ips)
+    run_session_manager ip "$@"
     ;;
   monitor)
     cmd_monitor "$@"

@@ -13,6 +13,7 @@ RUN_SH="${ROOT_DIR}/run.sh"
 SSHD_MATCH_INSTALL="${ROOT_DIR}/sshd/match-install.sh"
 RUNTIME_INSTALL="${ROOT_DIR}/runtime/install.sh"
 AUTO_RESUME="${ROOT_DIR}/runtime/auto-resume.sh"
+SESSION_MANAGER="${ROOT_DIR}/runtime/session-manager.sh"
 LEGACY_AUTO_SCREEN="${ROOT_DIR}/runtime/auto-screen.sh"
 PROFILE_ENTRY="${ROOT_DIR}/runtime/profile-entry.sh"
 TMUX_CONF="${ROOT_DIR}/runtime/tmux-auto-resume.conf"
@@ -26,8 +27,30 @@ DOCKER_MATRIX="${ROOT_DIR}/docker/matrix.sh"
 README_ART="${ROOT_DIR}/assets/capybara-terminal.png"
 
 # Temp roots: cleaned up at end-of-run via trap.
+# Strictly isolate TMUX_TMPDIR, XDG_RUNTIME_DIR, and session prefix so tests
+# never touch any live user tmux socket on the host.
 TEST_TMP_ROOT="$(mktemp -d)"
-cleanup_tests() { rm -rf "$TEST_TMP_ROOT"; }
+unset TMUX STY
+export TMUX_TMPDIR="${TEST_TMP_ROOT}/isolated-tmux-tmp"
+export XDG_RUNTIME_DIR="${TEST_TMP_ROOT}/isolated-xdg-runtime"
+export SSH_AUTO_RESUME_SESSION_PREFIX="smoketest-isolated"
+mkdir -p "$TMUX_TMPDIR" "$XDG_RUNTIME_DIR"
+chmod 700 "$TMUX_TMPDIR" "$XDG_RUNTIME_DIR"
+
+TEST_TMUX_SERVERS=()
+cleanup_tests() {
+  local entry dir sock
+  if [[ ${#TEST_TMUX_SERVERS[@]} -gt 0 ]]; then
+    for entry in "${TEST_TMUX_SERVERS[@]}"; do
+      dir="${entry%%|*}"
+      sock="${entry#*|}"
+      if [[ -n "$dir" && "$dir" == "${TEST_TMP_ROOT}"/* && -n "$sock" && "$sock" == smoketest-* ]]; then
+        TMUX_TMPDIR="$dir" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+      fi
+    done
+  fi
+  rm -rf "$TEST_TMP_ROOT"
+}
 trap cleanup_tests EXIT INT TERM HUP
 
 mktemp_in_tests() { mktemp -p "$TEST_TMP_ROOT"; }
@@ -41,7 +64,7 @@ test_required_files() {
   test_case "files: every distributed source is present"
   local f
   for f in "$ROOT_INSTALL" "$RUN_SH" "$SSHD_MATCH_INSTALL" "$RUNTIME_INSTALL" "$AUTO_RESUME" \
-           "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$TMUX_CONF" "$SCREENRC" \
+           "$SESSION_MANAGER" "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$TMUX_CONF" "$SCREENRC" \
            "$LEGACY_SCREENRC" "$PKGBUILD" "$SRCINFO" "$PACKAGE_BUILD" \
            "$PAYLOAD" "$DOCKER_MATRIX" "$README_ART"; do
     assert_file_exists "$f"
@@ -52,7 +75,7 @@ test_bash_syntax() {
   test_case "syntax: bash -n on every bash script"
   local f
   for f in "$ROOT_INSTALL" "$RUN_SH" "$SSHD_MATCH_INSTALL" "$RUNTIME_INSTALL" "$AUTO_RESUME" \
-           "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$PACKAGE_BUILD" \
+           "$SESSION_MANAGER" "$LEGACY_AUTO_SCREEN" "$PROFILE_ENTRY" "$PACKAGE_BUILD" \
            "$PAYLOAD" "$DOCKER_MATRIX" "${ROOT_DIR}/tests/lib.sh" "${ROOT_DIR}/tests/smoke.sh"; do
     if ! bash -n "$f" 2>/dev/null; then
       fail "bash -n failed on $f"
@@ -1196,7 +1219,7 @@ test_tempfile_cleanup_on_signal() {
   confdir="$(mktemp_d_in_tests)"
   cat > "${bin}/sshd" <<'FAKE_HANG_SSHD'
 #!/usr/bin/env bash
-sleep 30
+sleep 3
 FAKE_HANG_SSHD
   chmod +x "${bin}/sshd"
   printf 'Port 22\n' > "${confdir}/sshd_config"
@@ -1316,6 +1339,474 @@ test_docker_package_builds_install_git_for_pkgver() {
 }
 
 # ============================================================
+# Tier 12: empty/cleared detection, live preview picker & IP management
+# ============================================================
+
+test_exact_tmux_session_matching() {
+  test_case "select-tmux: exact match avoids ssh-resume-1 prefix-matching ssh-resume-10"
+  local fake_bin state result
+  fake_bin="$(mktemp_d_in_tests)"
+  state="$(mktemp_in_tests)"
+  cat > "${fake_bin}/tmux" <<'FAKE_TMUX'
+#!/usr/bin/env bash
+state="${FAKE_TMUX_STATE:?}"
+while [[ $# -gt 0 ]]; do case "$1" in -L|-f) shift 2 ;; *) break ;; esac; done
+cmd="${1:-}"; shift || true
+session_arg() {
+  local v=""
+  while [[ $# -gt 0 ]]; do case "$1" in -t|-s) v="$2"; shift 2 ;; *) shift ;; esac; done
+  printf '%s\n' "$v"
+}
+case "$cmd" in
+  list-sessions) awk -F'|' '{print $1}' "$state" ;;
+  # Simulate real tmux prefix-matching bug when `=` is omitted:
+  has-session) grep -q "^$(session_arg "$@")" "$state" ;;
+  display-message) awk -F'|' -v s="$(session_arg "$@")" '$1 ~ "^"s {print $2; f=1; exit} END{exit f?0:1}' "$state" ;;
+  *) exit 2 ;;
+esac
+FAKE_TMUX
+  chmod +x "${fake_bin}/tmux"
+  printf '%s\n' 'ssh-resume-0|1' 'ssh-resume-10|1' > "$state"
+
+  result="$(PATH="${fake_bin}:$PATH" FAKE_TMUX_STATE="$state" \
+            AUTO_RESUME="$AUTO_RESUME" SSH_AUTO_RESUME_KEEP_FUNCTIONS=1 bash -c '
+    . "$AUTO_RESUME"
+    _ssh_auto_resume_socket_name=smoketest-exact
+    _ssh_auto_resume_session_base=ssh-resume
+    _ssh_auto_resume_reservation_dir="$(mktemp -d)"
+    SSH_AUTO_RESUME_MAX_SLOTS=12
+    _ssh_auto_resume_select_tmux
+    printf "%s\n" "$_ssh_auto_resume_selected"
+  ')"
+  assert_eq "$result" "ssh-resume-1" "slot 1 picked even when slot 10 is attached"
+}
+
+test_cli_picker_config_toggle() {
+  test_case "cli: picker show/on/off/auto configures login picker mode"
+  local home out
+  home="$(mktemp_d_in_tests)"
+  out="$(mktemp_in_tests)"
+
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" picker show > "$out"
+  assert_grep 'picker: auto' "$out"
+
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" picker on > "$out"
+  assert_grep 'Picker enabled' "$out"
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" picker show > "$out"
+  assert_grep 'picker: on' "$out"
+
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" picker off > "$out"
+  assert_grep 'Picker disabled' "$out"
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" picker show > "$out"
+  assert_grep 'picker: off' "$out"
+
+  HOME="$home" XDG_CONFIG_HOME="" "$ROOT_INSTALL" picker auto > "$out"
+  assert_file_missing "${home}/.config/ssh-multisession-resume/picker"
+}
+
+test_session_classification_empty_cleared_open_active() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    test_case "session-manager: empty/cleared/open/active detection (skipped: tmux missing)"
+    return
+  fi
+  test_case "session-manager: classifies empty, cleared, open, child-job, and active sessions"
+  local home rt prefix user sock other_dir
+  home="$(mktemp_d_in_tests)"
+  rt="$(mktemp_d_in_tests)"
+  other_dir="$(mktemp_d_in_tests)"
+  chmod 700 "$rt"
+  prefix="smoketest-cls"
+  user="ucls"
+  sock="${prefix}-${user}"
+  TEST_TMUX_SERVERS+=("${rt}|${sock}")
+
+  # 0: fresh untouched shell in HOME -> empty
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-0" -c "$home" "PS1='$ ' bash --norc --noprofile -i"
+  # 1: idle shell in non-HOME directory -> cleared
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-1" -c "$other_dir" "PS1='$ ' bash --norc --noprofile -i"
+  # 2: terminal with multi-line output on screen -> open
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-2" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"line1\nline2\nline3\nline4\n\"; exec sleep 30'"
+  # 3: shell with a live background child job -> must be open (never empty/cleared!)
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-3" -c "$home" \
+    "PS1='$ ' bash --norc --noprofile -i"
+  # 4: PID-reserved session -> active
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-4" -c "$home" "PS1='$ ' bash --norc --noprofile -i"
+  mkdir -p "${rt}/${sock}.reservations"
+  printf '%s\n' "$$" > "${rt}/${sock}.reservations/tmux-${prefix}-4.pid"
+
+  sleep 0.35
+  TMUX_TMPDIR="$rt" tmux -L "$sock" send-keys -t "=${prefix}-3:" "sleep 30 &" Enter
+  TMUX_TMPDIR="$rt" tmux -L "$sock" send-keys -t "=${prefix}-3:" "clear" Enter
+  sleep 0.35
+
+  local s0 s1 s2 s3 s4
+  s0="$(HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+        bash "$SESSION_MANAGER" classify "${prefix}-0")"
+  s1="$(HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+        bash "$SESSION_MANAGER" classify "${prefix}-1")"
+  s2="$(HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+        bash "$SESSION_MANAGER" classify "${prefix}-2")"
+  s3="$(HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+        bash "$SESSION_MANAGER" classify "${prefix}-3")"
+  s4="$(HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+        bash "$SESSION_MANAGER" classify "${prefix}-4")"
+
+  assert_eq "$s0" "empty" "untouched shell in HOME is empty"
+  assert_eq "$s1" "cleared" "idle shell in non-HOME dir is cleared"
+  assert_eq "$s2" "open" "session with running command/output is open"
+  assert_eq "$s3" "open" "cleared shell with background child job stays open"
+  assert_eq "$s4" "active" "PID-reserved session is active"
+
+  TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+}
+
+test_preview_never_captures_active_sessions() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    test_case "preview: active sessions are never previewed (skipped: tmux missing)"
+    return
+  fi
+  test_case "preview: detached sessions preview content; active sessions NEVER leak pane output"
+  local home rt prefix user sock res_file ui_out
+  home="$(mktemp_d_in_tests)"
+  rt="$(mktemp_d_in_tests)"
+  res_file="$(mktemp_in_tests)"
+  ui_out="$(mktemp_in_tests)"
+  chmod 700 "$rt"
+  prefix="smoketest-prv"
+  user="uprv"
+  sock="${prefix}-${user}"
+  TEST_TMUX_SERVERS+=("${rt}|${sock}")
+
+  # Detached session with visible marker
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-0" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"DETACHED_PREVIEW_OK_42\n\"; exec sleep 30'"
+  # Active (reserved) session with secret marker
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-1" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"SECRET_ACTIVE_PANE_DO_NOT_SHOW_99\n\"; exec sleep 30'"
+  mkdir -p "${rt}/${sock}.reservations"
+  printf '%s\n' "$$" > "${rt}/${sock}.reservations/tmux-${prefix}-1.pid"
+
+  sleep 0.35
+
+  local detached_prev active_prev
+  detached_prev="$(HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+                   bash "$SESSION_MANAGER" preview-text "${prefix}-0")"
+  active_prev="$(HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+                 bash "$SESSION_MANAGER" preview-text "${prefix}-1")"
+
+  assert_contains "$detached_prev" "DETACHED_PREVIEW_OK_42" "detached session preview captures pane"
+  assert_contains "$active_prev" "Active session - live preview disabled" "active session shows disabled notice"
+  if [[ "$active_prev" == *"SECRET_ACTIVE_PANE_DO_NOT_SHOW_99"* ]]; then
+    fail "active session pane content leaked in preview-text"
+  fi
+
+  # Also navigate across every item in the TUI picker via Down arrows and verify secret never renders!
+  printf '\e[B\e[B\e[B\n' | \
+    HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi > "$ui_out" 2>&1 || true
+
+  assert_grep 'DETACHED_PREVIEW_OK_42' "$ui_out"
+  assert_no_grep 'SECRET_ACTIVE_PANE_DO_NOT_SHOW_99' "$ui_out"
+
+  TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+}
+
+test_picker_arrow_keys_and_number_selection() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    test_case "picker: arrow keys and number selection (skipped: tmux missing)"
+    return
+  fi
+  test_case "picker: arrow keys, number keys, new, skip, takeover, and clean work"
+  local home rt prefix user sock res_file
+  home="$(mktemp_d_in_tests)"
+  rt="$(mktemp_d_in_tests)"
+  res_file="$(mktemp_in_tests)"
+  chmod 700 "$rt"
+  prefix="smoketest-pck"
+  user="upck"
+  sock="${prefix}-${user}"
+  TEST_TMUX_SERVERS+=("${rt}|${sock}")
+
+  # Create two detached open sessions + one empty session + one active session
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-0" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"alpha_work\n\"; exec sleep 30'"
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-1" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"beta_work\n\"; exec sleep 30'"
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-2" -c "$home" \
+    "PS1='$ ' bash --norc --noprofile -i"
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-3" -c "$home" \
+    "PS1='$ ' bash --norc --noprofile -i"
+  mkdir -p "${rt}/${sock}.reservations"
+  printf '%s\n' "$$" > "${rt}/${sock}.reservations/tmux-${prefix}-3.pid"
+
+  sleep 0.35
+
+  # 1. Default Enter selects item 1 (smoketest-pck-0)
+  printf '\n' | HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+  assert_eq "$(cat "$res_file")" "ATTACH|${prefix}-0" "Enter picks first open session"
+
+  # 2. Down Arrow + Enter selects item 2 (smoketest-pck-1)
+  printf '\e[B\n' | HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+  assert_eq "$(cat "$res_file")" "ATTACH|${prefix}-1" "Down arrow + Enter picks second open session"
+
+  # 3. Down x2 + Up x1 + Enter selects item 2 (smoketest-pck-1)
+  printf '\e[B\e[B\e[A\n' | HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+  assert_eq "$(cat "$res_file")" "ATTACH|${prefix}-1" "Down/Up arrow navigation works"
+
+  # 4. Typing number '2' directly selects item 2 (smoketest-pck-1)
+  printf '2' | HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+  assert_eq "$(cat "$res_file")" "ATTACH|${prefix}-1" "Typing digit 2 selects item 2"
+
+  # 5. Pressing 'n' creates a new slot (smoketest-pck-4)
+  printf 'n' | HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+  assert_eq "$(cat "$res_file")" "NEW|${prefix}-4" "Hotkey n selects next free new slot"
+
+  # 6. Pressing 'q' skips multiplexer
+  printf 'q' | HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+  assert_eq "$(cat "$res_file")" "SKIP|" "Hotkey q skips"
+
+  # 7. Pressing 'c' inside picker cleans the empty session (smoketest-pck-2) while keeping open & active!
+  printf 'cq' | HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+  if TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}' | grep -Fxq "${prefix}-2"; then
+    fail "Hotkey c should have cleaned empty session ${prefix}-2"
+  fi
+  if ! TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}' | grep -Fxq "${prefix}-0"; then
+    fail "Hotkey c should preserve open session ${prefix}-0"
+  fi
+  if ! TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}' | grep -Fxq "${prefix}-3"; then
+    fail "Hotkey c should preserve active session ${prefix}-3"
+  fi
+
+  # 8. Navigating to active session (now item 5: 0, 1, NEW, SKIP, ACTIVE-3) and pressing 't' emits TAKEOVER
+  printf '\e[A\e[A\e[B\e[Bt' >/dev/null 2>&1 || true
+  printf '\e[At' | HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+  assert_eq "$(cat "$res_file")" "TAKEOVER|${prefix}-3" "Up-wrap to active session + t emits TAKEOVER"
+
+  TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+}
+
+test_sessions_clean_and_drop_safety() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    test_case "sessions: clean and drop safety (skipped: tmux missing)"
+    return
+  fi
+  test_case "sessions: clean/drop never kill active or keepalive sessions"
+  local home rt prefix user sock other_dir
+  home="$(mktemp_d_in_tests)"
+  rt="$(mktemp_d_in_tests)"
+  other_dir="$(mktemp_d_in_tests)"
+  chmod 700 "$rt"
+  prefix="smoketest-cln"
+  user="ucln"
+  sock="${prefix}-${user}"
+  TEST_TMUX_SERVERS+=("${rt}|${sock}")
+
+  # Keepalive service session + empty + cleared + active
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "__ssh_auto_resume_keepalive" "sleep 30"
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-0" -c "$home" "PS1='$ ' bash --norc --noprofile -i"
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-1" -c "$other_dir" "PS1='$ ' bash --norc --noprofile -i"
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-2" -c "$home" "PS1='$ ' bash --norc --noprofile -i"
+  mkdir -p "${rt}/${sock}.reservations"
+  printf '%s\n' "$$" > "${rt}/${sock}.reservations/tmux-${prefix}-2.pid"
+
+  sleep 0.35
+
+  # Default clean removes only empty (prefix-0), preserving cleared (prefix-1), active (prefix-2), keepalive
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    "$ROOT_INSTALL" sessions clean >/dev/null
+  local names
+  names="$(TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}')"
+  if printf '%s\n' "$names" | grep -Fxq "${prefix}-0"; then fail "empty session was not cleaned"; fi
+  assert_contains "$names" "${prefix}-1" "cleared session preserved without --cleared"
+  assert_contains "$names" "${prefix}-2" "active session preserved"
+  assert_contains "$names" "__ssh_auto_resume_keepalive" "keepalive preserved"
+
+  # Refuses to drop active or keepalive sessions
+  expect_failure env HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" "$ROOT_INSTALL" sessions drop "${prefix}-2"
+  expect_failure env HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" "$ROOT_INSTALL" sessions drop "__ssh_auto_resume_keepalive"
+
+  # Drops detached cleared session explicitly
+  expect_success env HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" "$ROOT_INSTALL" sessions drop "${prefix}-1"
+  names="$(TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}')"
+  if printf '%s\n' "$names" | grep -Fxq "${prefix}-1"; then fail "detached session was not dropped"; fi
+  assert_contains "$names" "${prefix}-2" "active session still preserved"
+
+  TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+}
+
+test_ip_management_store_label_transfer_drop_prune() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    test_case "ip-manager: store, label, transfer, drop, prune (skipped: tmux missing)"
+    return
+  fi
+  test_case "ip-manager: records IPs, labels devices, transfers per-client sessions, and safely drops IPs"
+  local home rt prefix user sock out
+  home="$(mktemp_d_in_tests)"
+  rt="$(mktemp_d_in_tests)"
+  out="$(mktemp_in_tests)"
+  chmod 700 "$rt"
+  prefix="smoketest-ipm"
+  user="uipm"
+  sock="${prefix}-${user}"
+  TEST_TMUX_SERVERS+=("${rt}|${sock}")
+
+  # Create a live per-client session for 192.168.1.50
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "ip-192_168_1_50-0" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"roaming_work\n\"; exec sleep 30'"
+  sleep 0.25
+
+  HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    bash "$SESSION_MANAGER" record-connect "192.168.1.50" "ip-192_168_1_50-0"
+  HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    "$ROOT_INSTALL" policy set 192.168.1.50 per-client >/dev/null
+  HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    "$ROOT_INSTALL" ip label 192.168.1.50 laptop >/dev/null
+
+  HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    "$ROOT_INSTALL" ip show > "$out"
+  assert_grep '192\.168\.1\.50 \(laptop\)' "$out"
+  assert_grep 'policy=per-client' "$out"
+  assert_grep 'ip-192_168_1_50-0\[open\]' "$out"
+
+  # Transfer 192.168.1.50 -> 100.101.137.20: renames live tmux session + migrates policy & label!
+  HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    "$ROOT_INSTALL" ip transfer 192.168.1.50 100.101.137.20 > "$out"
+  assert_grep 'Transferred IP 192\.168\.1\.50 -> 100\.101\.137\.20' "$out"
+  assert_file_missing "${home}/.config/ssh-multisession-resume/choices/192_168_1_50"
+  assert_eq "$(cat "${home}/.config/ssh-multisession-resume/choices/100_101_137_20")" "per-client"
+
+  local names
+  names="$(TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}')"
+  assert_contains "$names" "ip-100_101_137_20-0" "live per-client session renamed to new IP"
+
+  # Safe drop of 100.101.137.20: removes IP config and migrates per-client session into global pool!
+  HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    "$ROOT_INSTALL" ip drop 100.101.137.20 > "$out"
+  assert_file_missing "${home}/.config/ssh-multisession-resume/choices/100_101_137_20"
+  assert_file_missing "${home}/.config/ssh-multisession-resume/ips/100_101_137_20.meta"
+  names="$(TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}')"
+  assert_contains "$names" "${prefix}-0" "per-client session safely migrated to shared pool on ip drop"
+
+  # Prune cleans up stale metadata cleanly
+  expect_success env HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" "$ROOT_INSTALL" ip prune
+
+  TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+}
+
+test_picker_ip_subscreen_and_session_drop() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    test_case "picker: IP sub-screen [i] transfer/policy and [d] drop detached (skipped: tmux missing)"
+    return
+  fi
+  test_case "picker: IP sub-screen [i] transfers IPs/policies and [d] drops detached only"
+  local home rt prefix user sock res_file
+  home="$(mktemp_d_in_tests)"
+  rt="$(mktemp_d_in_tests)"
+  res_file="$(mktemp_in_tests)"
+  chmod 700 "$rt"
+  prefix="smoketest-sub"
+  user="usub"
+  sock="${prefix}-${user}"
+  TEST_TMUX_SERVERS+=("${rt}|${sock}")
+
+  # Create a per-client session for old IP 10.0.0.5 + a detached global session + an active session
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "ip-10_0_0_5-0" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"from_old_ip\n\"; exec sleep 30'"
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-1" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"disposable_work\n\"; exec sleep 30'"
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-2" -c "$home" \
+    "bash --norc --noprofile -c 'printf \"active_work\n\"; exec sleep 30'"
+  mkdir -p "${rt}/${sock}.reservations"
+  printf '%s\n' "$$" > "${rt}/${sock}.reservations/tmux-${prefix}-2.pid"
+  sleep 0.3
+
+  HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    bash "$SESSION_MANAGER" record-connect "10.0.0.5" "ip-10_0_0_5-0"
+  HOME="$home" XDG_CONFIG_HOME="" USER="$user" "$ROOT_INSTALL" policy set 10.0.0.5 per-client >/dev/null
+
+  # Connect from new IP 10.0.0.99:
+  # Press 'i' (open IP manager) -> '2' (select 10.0.0.5) -> 't' (transfer to 10.0.0.99) -> 'b' (back) -> 'q' (exit)
+  printf 'i2tbq' | \
+    HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" SSH_AUTO_RESUME_CLIENT_IP="10.0.0.99" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "ip-10_0_0_99" --mode per-client >/dev/null
+
+  assert_file_exists "${home}/.config/ssh-multisession-resume/choices/10_0_0_99"
+  local names
+  names="$(TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}')"
+  assert_contains "$names" "ip-10_0_0_99-0" "IP manager [t] renamed per-client session to current IP"
+
+  # Test [d] + 'y' drops highlighted detached session (${prefix}-1 is item 1 before per-client slots)
+  printf 'dyq' | \
+    HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" SSH_AUTO_RESUME_CLIENT_IP="10.0.0.99" NO_COLOR=1 \
+    bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi >/dev/null
+
+  names="$(TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}')"
+  if printf '%s\n' "$names" | grep -Fxq "${prefix}-1"; then
+    fail "Picker [d]+[y] should have dropped detached ${prefix}-1"
+  fi
+  assert_contains "$names" "${prefix}-2" "Active session remains untouched"
+
+  # Test CLI sessions transfer
+  HOME="$home" XDG_CONFIG_HOME="" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    "$ROOT_INSTALL" sessions transfer "ip-10_0_0_99-0" "172.16.0.8" >/dev/null
+  names="$(TMUX_TMPDIR="$rt" tmux -L "$sock" list-sessions -F '#{session_name}')"
+  assert_contains "$names" "${prefix}-0" "sessions transfer to default-mode IP migrates slot to global pool"
+
+  TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
+}
+
+# ============================================================
 # Run all tests
 # ============================================================
 
@@ -1403,6 +1894,15 @@ main() {
   test_package_builder_supports_expected_formats
   test_package_builder_uses_git_pkgver_when_available
   test_docker_package_builds_install_git_for_pkgver
+
+  test_exact_tmux_session_matching
+  test_cli_picker_config_toggle
+  test_session_classification_empty_cleared_open_active
+  test_preview_never_captures_active_sessions
+  test_picker_arrow_keys_and_number_selection
+  test_sessions_clean_and_drop_safety
+  test_ip_management_store_label_transfer_drop_prune
+  test_picker_ip_subscreen_and_session_drop
 
   print_summary
 }

@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 AUTO_RESUME="${SCRIPT_DIR}/auto-resume.sh"
+SESSION_MANAGER="${SCRIPT_DIR}/session-manager.sh"
 TMUX_CONF="${SCRIPT_DIR}/tmux-auto-resume.conf"
 SCREENRC="${SCRIPT_DIR}/screen-auto-resume.screenrc"
 SERVICE_NAME="ssh-auto-resume.service"
@@ -220,6 +221,11 @@ shell_quote() {
 }
 
 tmux_runtime_dir() {
+  if [[ -r "$SESSION_MANAGER" ]]; then
+    bash "$SESSION_MANAGER" resolve-tmpdir
+    return 0
+  fi
+
   if [[ -n "${TMUX_TMPDIR:-}" ]]; then
     printf '%s\n' "$TMUX_TMPDIR"
     return 0
@@ -386,6 +392,11 @@ cmd_status() {
 }
 
 cmd_sessions() {
+  if [[ -r "$SESSION_MANAGER" ]]; then
+    bash "$SESSION_MANAGER" sessions "$@"
+    return $?
+  fi
+
   local socket
   local name attached windows state session_field rest tmux_sessions=""
   local printed=0

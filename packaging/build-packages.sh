@@ -57,7 +57,11 @@ a per-client session mode.
 
 Optional commands:
   ssh-multisession-resume               status + saved policies
+  ssh-multisession-resume pick          interactive session picker + preview
   ssh-multisession-resume doctor        diagnose the current session
+  ssh-multisession-resume sessions      list sessions (active/open/cleared/empty)
+  ssh-multisession-resume ip show       inspect stored IPs, labels, and sessions
+  ssh-multisession-resume ip transfer   migrate sessions & policy to a new IP
   ssh-multisession-resume policy show   list saved per-IP choices
   ssh-multisession-resume menu on       enable the opt-in first-login menu
   ssh-multisession-resume menu off      disable it (default)

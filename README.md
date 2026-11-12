@@ -29,11 +29,35 @@ cd ssh-multisession-resume
 ./run.sh
 ```
 
-## First SSH Login
+## Session Picker, Live Preview & Empty-Terminal Detection
 
-New logins default to `multi` without prompting. Every source IP shares the
-same session pool: a reconnect from any IP attaches to the first free slot,
-and concurrent logins get additional slots.
+Your very first SSH login opens `ssh-resume-0` immediately with no prompt.
+Whenever open managed sessions already exist on subsequent connects or new SSH
+instances, the interactive **Session Picker** appears automatically:
+
+- **Arrow keys (`Up`/`Down` or `j`/`k`)** browse detached sessions with a live
+  pane preview, or **type a number (`1`–`9`)** to jump straight in.
+- **Active sessions are never previewed**: any currently attached session is
+  marked `[active - preview hidden]` and `capture-pane` is strictly skipped.
+- **Cleared & empty terminal detection**: single-pane idle shells with no
+  running foreground or background child processes are automatically badged as
+  `[empty]` (fresh untouched shell) or `[cleared]` (`clear` / `Ctrl-L` shell)
+  so you can reuse or prune them in one keypress (`c`).
+- **Built-in IP & transfer controls**: press `t` to transfer/reclaim a session
+  whose old SSH connection went stale, `d` to drop a detached session, or `i`
+  to open the interactive **IP & Session Manager** directly from the picker.
+
+Configure login picker behavior anytime with:
+
+```bash
+ssh-multisession-resume picker auto   # default: open when sessions exist
+ssh-multisession-resume picker on     # always open on SSH login
+ssh-multisession-resume picker off    # silent first-free-slot attach
+```
+
+## Modes & First-Login Menu
+
+New logins default to `multi` without prompting:
 
 | Mode | Behavior |
 | --- | --- |
@@ -42,18 +66,46 @@ and concurrent logins get additional slots.
 | `skip` | Leave that source alone |
 | `per-client` | Separate `ip-<source>-N` pool per source IP |
 
-The first-login menu is **off by default**. Enable it with
+The per-IP mode prompt is **off by default**. Enable it with
 `ssh-multisession-resume menu on` to let each new source IP pick a mode,
-including `per-client`; disable it again with `menu off`. Choices are saved in
-`~/.config/ssh-multisession-resume/choices/` and can also be set directly with
+including `per-client`; disable it again with `menu off`. Choices live in
+`~/.config/ssh-multisession-resume/choices/` and can also be set with
 `ssh-multisession-resume policy set`.
+
+## IP & Session Management
+
+Client IPs, device labels, connection counts, and session ownership are stored
+under `~/.config/ssh-multisession-resume/` (`ips/` and `sessions/`):
+
+- **Transfer (`ip transfer OLD_IP [NEW_IP] [--detach]`)**: migrates saved
+  policies, device labels, session ownership records, and live `ip-<old>-N`
+  per-client tmux slots (`rename-session`) to `NEW_IP` (defaults to your
+  current SSH IP), optionally detaching stale clients without killing running
+  programs.
+- **Drop (`ip drop IP [--detach] [--kill-detached]`)**: removes stored IP
+  records and safely migrates any `ip-<old>-N` per-client sessions back into
+  the shared `ssh-resume-N` pool so open work is never orphaned (or closes only
+  detached sessions with `--kill-detached`, never touching active sessions).
+- **Label (`ip label IP NAME`)**: tag dynamic or Tailscale/LAN IPs (e.g.
+  `laptop`, `ipad`) so they appear by name in `sessions`, `ip show`, and the
+  login picker.
 
 ## Commands
 
 ```bash
 ssh-multisession-resume status
 ssh-multisession-resume doctor
+ssh-multisession-resume pick
+ssh-multisession-resume picker show
 ssh-multisession-resume sessions
+ssh-multisession-resume sessions clean --cleared
+ssh-multisession-resume sessions drop ssh-resume-2
+ssh-multisession-resume sessions transfer ssh-resume-0 --detach
+ssh-multisession-resume ip show
+ssh-multisession-resume ip label 100.101.137.20 ipad
+ssh-multisession-resume ip transfer 192.168.1.50 100.101.137.20 --detach
+ssh-multisession-resume ip drop 192.168.1.50
+ssh-multisession-resume ip prune
 ssh-multisession-resume policy show
 ssh-multisession-resume policy move OLD_IP NEW_IP
 ssh-multisession-resume menu on
