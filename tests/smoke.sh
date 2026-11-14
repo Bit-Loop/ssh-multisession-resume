@@ -1466,12 +1466,12 @@ test_session_classification_empty_cleared_open_active() {
   TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
 }
 
-test_preview_never_captures_active_sessions() {
+test_preview_captures_active_sessions_dimmed_and_purple() {
   if ! command -v tmux >/dev/null 2>&1; then
-    test_case "preview: active sessions are never previewed (skipped: tmux missing)"
+    test_case "preview: active sessions preview with purple transfer badge and dimmed text (skipped: tmux missing)"
     return
   fi
-  test_case "preview: detached sessions preview content; active sessions NEVER leak pane output"
+  test_case "preview: detached and active sessions both preview live panes (active styled purple + dimmed)"
   local home rt prefix user sock res_file ui_out
   home="$(mktemp_d_in_tests)"
   rt="$(mktemp_d_in_tests)"
@@ -1487,12 +1487,14 @@ test_preview_never_captures_active_sessions() {
   HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
     tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-0" -c "$home" \
     "bash --norc --noprofile -c 'printf \"DETACHED_PREVIEW_OK_42\n\"; exec sleep 30'"
-  # Active (reserved) session with secret marker
+  # Active (reserved) session with visible marker and foreign IP metadata
   HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
     tmux -L "$sock" -f /dev/null new-session -d -s "${prefix}-1" -c "$home" \
-    "bash --norc --noprofile -c 'printf \"SECRET_ACTIVE_PANE_DO_NOT_SHOW_99\n\"; exec sleep 30'"
+    "bash --norc --noprofile -c 'printf \"ACTIVE_LIVE_PREVIEW_OK_99\n\"; exec sleep 30'"
   mkdir -p "${rt}/${sock}.reservations"
   printf '%s\n' "$$" > "${rt}/${sock}.reservations/tmux-${prefix}-1.pid"
+  HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" \
+    bash "$SESSION_MANAGER" record-connect "203.0.113.77" "${prefix}-1"
 
   sleep 0.35
 
@@ -1503,19 +1505,24 @@ test_preview_never_captures_active_sessions() {
                  bash "$SESSION_MANAGER" preview-text "${prefix}-1")"
 
   assert_contains "$detached_prev" "DETACHED_PREVIEW_OK_42" "detached session preview captures pane"
-  assert_contains "$active_prev" "Active session - live preview disabled" "active session shows disabled notice"
-  if [[ "$active_prev" == *"SECRET_ACTIVE_PANE_DO_NOT_SHOW_99"* ]]; then
-    fail "active session pane content leaked in preview-text"
-  fi
+  assert_contains "$active_prev" "ACTIVE_LIVE_PREVIEW_OK_99" "active session preview captures live pane"
 
-  # Also navigate across every item in the TUI picker via Down arrows and verify secret never renders!
-  printf '\e[B\e[B\e[B\n' | \
+  # Navigate down to the active session in 256-color TUI mode and verify:
+  # 1) live pane content renders, 2) purple C_ACTIVE (38;5;141m) + '[t] transfer here' renders,
+  # 3) slightly greyed-out C_PREVIEW_DIM (38;5;246m) wraps the active preview text!
+  printf '\e[B\e[B\e[Bq' | \
     HOME="$home" USER="$user" TMUX_TMPDIR="$rt" XDG_RUNTIME_DIR="$rt" \
-    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" NO_COLOR=1 \
+    SSH_AUTO_RESUME_SESSION_PREFIX="$prefix" SSH_AUTO_RESUME_CLIENT_IP="198.51.100.10" \
+    TERM="xterm-256color" COLUMNS=120 LINES=28 \
     bash "$SESSION_MANAGER" login-pick --force-tty --result-file "$res_file" --session-base "$prefix" --mode multi > "$ui_out" 2>&1 || true
 
   assert_grep 'DETACHED_PREVIEW_OK_42' "$ui_out"
-  assert_no_grep 'SECRET_ACTIVE_PANE_DO_NOT_SHOW_99' "$ui_out"
+  assert_grep 'ACTIVE_LIVE_PREVIEW_OK_99' "$ui_out"
+  assert_grep '\[t\] transfer here' "$ui_out"
+  assert_grep $'\033\\[38;5;141m' "$ui_out"
+  assert_grep $'\033\\[38;5;246m.*ACTIVE_LIVE_PREVIEW_OK_99' "$ui_out"
+  assert_no_grep 'privacy guard' "$ui_out"
+  assert_no_grep 'preview hidden' "$ui_out"
 
   TMUX_TMPDIR="$rt" tmux -L "$sock" kill-server >/dev/null 2>&1 || true
 }
@@ -2069,7 +2076,7 @@ main() {
   test_exact_tmux_session_matching
   test_cli_picker_config_toggle
   test_session_classification_empty_cleared_open_active
-  test_preview_never_captures_active_sessions
+  test_preview_captures_active_sessions_dimmed_and_purple
   test_picker_arrow_keys_and_number_selection
   test_sessions_clean_and_drop_safety
   test_ip_management_store_label_transfer_drop_prune

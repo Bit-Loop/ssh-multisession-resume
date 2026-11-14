@@ -29,8 +29,9 @@
   - Clean `Ctrl+C` (`-isig`) & `Esc` handling across inline prompts, the IP
     sub-screen, and Zsh login hooks (preventing duplicate `/etc/zsh/zshrc`
     popups after skipping in `/etc/zsh/zprofile`).
-  - Active-session privacy guard: attached or PID-reserved sessions are never
-    captured or previewed (`capture-pane` is strictly skipped).
+  - Live previews for active/attached sessions: highlights attached and
+    foreign-IP sessions requiring `[t]` transfer in purple while rendering
+    their live pane preview text slightly dimmed for clear visual distinction.
   - Configurable login behavior via `picker show|auto|on|off`.
 - Cleared & empty terminal detection:
   - Classifies managed sessions into `active`, `open`, `cleared`, or `empty`

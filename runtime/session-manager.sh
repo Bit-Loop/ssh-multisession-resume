@@ -3,11 +3,9 @@
 # picker, and IP/session ownership management for ssh-multisession-resume.
 #
 # Safety invariants:
-#   1. Active (attached or PID-reserved) sessions are NEVER previewed
-#      (capture-pane is strictly skipped whenever attached > 0 or reserved).
-#   2. Destructive actions (clean / drop) NEVER target active/attached sessions,
+#   1. Destructive actions (clean / drop) NEVER target active/attached sessions,
 #      the current $TMUX session, or the __ssh_auto_resume_keepalive session.
-#   3. All tmux calls explicitly scope -L <managed-socket>.
+#   2. All tmux calls explicitly scope -L <managed-socket>.
 
 set -euo pipefail
 
@@ -723,8 +721,7 @@ sm_classify_tmux_session() {
   printf 'open\n'
 }
 
-# Render safe preview lines for a session.
-# STRICT INVARIANT: Never calls capture-pane on active/attached sessions.
+# Render preview lines for a session (including active sessions).
 sm_render_preview_lines() {
   local socket="$1"
   local session="$2"
@@ -735,26 +732,6 @@ sm_render_preview_lines() {
   local pane_path="${7:-~}"
   local history_size="${8:-0}"
   local owner_ip="${9:--}"
-
-  # Live re-check of attachment right before any capture (prevents TOCTOU race).
-  local live_attached="0"
-  if [[ "$state" == "active" ]] || sm_is_reserved "tmux-${session}"; then
-    live_attached="1"
-  else
-    live_attached="$(tmux -L "$socket" display-message -p -t "=${session}:" '#{session_attached}' 2>/dev/null || printf '1')"
-  fi
-
-  if [[ "$live_attached" != "0" ]]; then
-    printf '%s\n' "[Active session - live preview disabled]"
-    printf '%s\n' ""
-    printf '%s\n' "This terminal is currently attached by an active client"
-    printf '%s\n' "(last recorded IP: $(sm_ip_display "$owner_ip"))."
-    printf '%s\n' ""
-    printf '%s\n' "Active sessions are never captured or previewed."
-    printf '%s\n' "Press [t] only if your previous connection dropped and"
-    printf '%s\n' "you want to detach the old client & transfer it here."
-    return 0
-  fi
 
   local short_cwd
   short_cwd="$(sm_shorten_path "$pane_path")"
@@ -813,8 +790,8 @@ sm_render_preview_lines() {
 }
 
 # Rich TUI preview capture: returns header line "pane_w|pane_h|total_lines|max_src_width|start_line"
-# followed by exact `max_lines` padded lines (preserving safe SGR colors when keep_color=1).
-# STRICT INVARIANT: Never calls capture-pane on active/attached sessions.
+# followed by exact `max_lines` padded lines (preserving safe SGR colors when keep_color=1,
+# or plain text when keep_color=0 so active/transfer-needed sessions can be uniformly dimmed).
 sm_capture_tui_preview() {
   local socket="$1"
   local session="$2"
@@ -828,31 +805,11 @@ sm_capture_tui_preview() {
   local pan_x="${10:-0}"
   local keep_color="${11:-1}"
 
-  local live_info="" live_attached="0" pane_w="80" pane_h="24"
-  if [[ "$state" == "active" ]] || sm_is_reserved "tmux-${session}"; then
-    live_attached="1"
-  else
-    live_info="$(tmux -L "$socket" display-message -p -t "=${session}:" '#{session_attached}|#{pane_width}|#{pane_height}' 2>/dev/null || printf '1|80|24')"
-    IFS='|' read -r live_attached pane_w pane_h <<< "$live_info"
-    [[ -n "$live_attached" ]] || live_attached="1"
-    [[ "$pane_w" =~ ^[0-9]+$ ]] || pane_w=80
-    [[ "$pane_h" =~ ^[0-9]+$ ]] || pane_h=24
-  fi
-
-  if [[ "$live_attached" != "0" ]]; then
-    printf '0|0|7|0|0\n'
-    local -a msg=(
-      "[Active session - live preview disabled]"
-      ""
-      "This terminal is currently attached by an active client (IP: $(sm_ip_display "$owner_ip"))."
-      "Active sessions are strictly isolated and never captured or previewed."
-      ""
-      "Tip: Press [t] only if your previous SSH connection dropped and you want"
-      "     to detach the stale client and transfer this session here."
-    )
-    printf '%s\n' "${msg[@]}" | sm_format_stream_lines "$max_cols" 0 0 1 0 ">"
-    return 0
-  fi
+  local live_info="" pane_w="80" pane_h="24"
+  live_info="$(tmux -L "$socket" display-message -p -t "=${session}:" '#{pane_width}|#{pane_height}' 2>/dev/null || printf '80|24')"
+  IFS='|' read -r pane_w pane_h <<< "$live_info"
+  [[ "$pane_w" =~ ^[0-9]+$ ]] || pane_w=80
+  [[ "$pane_h" =~ ^[0-9]+$ ]] || pane_h=24
 
   local short_cwd
   short_cwd="$(sm_shorten_path "$pane_path")"
@@ -1802,7 +1759,7 @@ SM_LINE_CANCELLED=0
 SM_UTF8=1
 SM_COLOR=1
 C_RST="" C_BOLD="" C_DIM=""
-C_BORDER="" C_BRAND="" C_ACCENT="" C_TEXT="" C_MUTED=""
+C_BORDER="" C_BRAND="" C_ACCENT="" C_TEXT="" C_MUTED="" C_PREVIEW_DIM=""
 C_OPEN="" C_IDLE="" C_EMPTY="" C_ACTIVE="" C_NEW="" C_WARN="" C_ERR=""
 C_SEL_BG="" C_KEY_BG="" C_KEY_FG=""
 G_TL="+" G_TR="+" G_BL="+" G_BR="+" G_H="-" G_V="|" G_ML="+" G_MR="+"
@@ -1833,7 +1790,7 @@ sm_init_theme() {
   if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == "dumb" ]]; then
     SM_COLOR=0
     C_RST=""; C_BOLD=""; C_DIM=""
-    C_BORDER=""; C_BRAND=""; C_ACCENT=""; C_TEXT=""; C_MUTED=""
+    C_BORDER=""; C_BRAND=""; C_ACCENT=""; C_TEXT=""; C_MUTED=""; C_PREVIEW_DIM=""
     C_OPEN=""; C_IDLE=""; C_EMPTY=""; C_ACTIVE=""; C_NEW=""; C_WARN=""; C_ERR=""
     C_SEL_BG=""; C_KEY_BG=""; C_KEY_FG=""
     return 0
@@ -1851,6 +1808,7 @@ sm_init_theme() {
       C_ACCENT=$'\033[38;5;81m'
       C_TEXT=$'\033[38;5;253m'
       C_MUTED=$'\033[38;5;244m'
+      C_PREVIEW_DIM=$'\033[38;5;246m'
       C_OPEN=$'\033[38;5;78m'
       C_IDLE=$'\033[38;5;215m'
       C_EMPTY=$'\033[38;5;243m'
@@ -1868,6 +1826,7 @@ sm_init_theme() {
       C_ACCENT=$'\033[36m'
       C_TEXT=$'\033[0;37m'
       C_MUTED=$'\033[2;37m'
+      C_PREVIEW_DIM=$'\033[2;37m'
       C_OPEN=$'\033[1;32m'
       C_IDLE=$'\033[1;33m'
       C_EMPTY=$'\033[2;37m'
@@ -2317,10 +2276,15 @@ sm_tui_ip_screen() {
         c_sess="$(sm_fit_plain "$sess_str" "$w_sess")"
         plain_row="$(sm_fit_plain "${num_tag} ${c_ip}  ${c_pol}  ${c_seen}  ${c_sess}" "$content_w")"
 
+        local ip_bar_c="$C_ACCENT" ip_row_c="$C_TEXT"
+        if [[ "$sess_str" != "-" && ( -z "$current_safe" || "$safe" != "$current_safe" ) ]]; then
+          ip_bar_c="$C_ACTIVE"
+          ip_row_c="$C_ACTIVE"
+        fi
         if (( idx == cursor )); then
-          buf+="${C_BORDER}${G_V}${C_RST}${C_SEL_BG}${C_ACCENT}${G_BAR}${C_RST}${C_SEL_BG} ${C_BOLD}${C_TEXT}${plain_row}${C_RST}${C_BORDER}${G_V}${C_RST}"$'\n'
+          buf+="${C_BORDER}${G_V}${C_RST}${C_SEL_BG}${ip_bar_c}${G_BAR}${C_RST}${C_SEL_BG} ${C_BOLD}${ip_row_c}${plain_row}${C_RST}${C_BORDER}${G_V}${C_RST}"$'\n'
         else
-          buf+="${C_BORDER}${G_V}${C_RST}  ${C_TEXT}${plain_row}${C_RST}${C_BORDER}${G_V}${C_RST}"$'\n'
+          buf+="${C_BORDER}${G_V}${C_RST}  ${ip_row_c}${plain_row}${C_RST}${C_BORDER}${G_V}${C_RST}"$'\n'
         fi
       done
 
@@ -2335,12 +2299,15 @@ sm_tui_ip_screen() {
 
     if (( total > 0 )); then
       local sel_safe="${ip_keys[$cursor]}"
-      local sel_meta sel_pol sel_cnt sel_sess sel_first d1 d2 d3 d4
+      local sel_meta sel_pol sel_cnt sel_sess sel_first d1 d2 d3 d4 sel_sess_c="$C_OPEN"
       sel_meta="$(sm_ip_meta_path "$sel_safe")"
       sel_pol="$(sm_ip_policy "$sel_safe")"
       sel_cnt="$(sm_meta_get "$sel_meta" connect_count)"
       sel_first="$(sm_format_age "$(sm_meta_get "$sel_meta" first_seen)")"
       sel_sess="$(sm_sessions_for_safe_ip "$sel_safe" "$cached_rows")"
+      if [[ -n "$sel_sess" && ( -z "$current_safe" || "$sel_safe" != "$current_safe" ) ]]; then
+        sel_sess_c="$C_ACTIVE"
+      fi
 
       d1="$(sm_fit_plain "  Address     : $(sm_ip_display "$sel_safe")  (key: ${sel_safe})" "$inner")"
       d2="$(sm_fit_plain "  Policy Mode : ${sel_pol}   ·   Connections: ${sel_cnt:-0}   ·   First seen: ${sel_first}" "$inner")"
@@ -2348,7 +2315,7 @@ sm_tui_ip_screen() {
       d4="$(sm_fit_plain "  Actions     : [t] migrates policy + sessions to ${current_ip:-current IP} · [x] safely returns slots to global pool" "$inner")"
       buf+="${C_BORDER}${G_V}${C_RST}${C_BOLD}${C_TEXT}${d1}${C_RST}${C_BORDER}${G_V}${C_RST}"$'\n'
       buf+="${C_BORDER}${G_V}${C_RST}${C_TEXT}${d2}${C_RST}${C_BORDER}${G_V}${C_RST}"$'\n'
-      buf+="${C_BORDER}${G_V}${C_RST}${C_OPEN}${d3}${C_RST}${C_BORDER}${G_V}${C_RST}"$'\n'
+      buf+="${C_BORDER}${G_V}${C_RST}${sel_sess_c}${d3}${C_RST}${C_BORDER}${G_V}${C_RST}"$'\n'
       buf+="${C_BORDER}${G_V}${C_RST}${C_MUTED}${d4}${C_RST}${C_BORDER}${G_V}${C_RST}"$'\n'
     else
       local r_pad
@@ -2531,9 +2498,10 @@ sm_run_picker() {
   sm_ensure_tmux_tmpdir
   sm_init_theme
 
-  local socket current_ip current_sess
+  local socket current_ip current_safe="" current_sess
   socket="$(sm_socket_name)"
   current_ip="$(sm_current_ip)"
+  [[ -n "$current_ip" ]] && current_safe="$(sm_sanitize "$current_ip")"
   current_sess="$(sm_current_tmux_session)"
 
   local cursor=-1 prev_cursor=-1 pan_x=0 flash="" flash_kind="info"
@@ -2566,7 +2534,7 @@ sm_run_picker() {
     #   2. Detached 'cleared' and 'empty' sessions
     #   3. '+ New terminal'
     #   4. '-> Plain shell' (on login) or '-> Cancel' (on CLI)
-    #   5. Active sessions (marked [active], NEVER previewed!)
+    #   5. Active sessions (purple [active] badge, greyed-out live preview, [t] to transfer)
     local -a item_kind=()
     local -a item_target=()
     local -a item_state=()
@@ -2775,11 +2743,14 @@ sm_run_picker() {
           badge_plain="${G_DOT_ACT} $(sm_fit_plain "active" $((w_badge - 2)))"
           badge_color="$C_ACTIVE"
           win_s="$(sm_fit_plain "${item_win[$idx]}w" "$w_win")"
-          cmd_s="$(sm_fit_plain "attached" "$w_cmd")"
-          local self_note="preview hidden"
-          [[ -n "$current_sess" && "$tgt" == "$current_sess" ]] && self_note="this session · preview hidden"
-          cwd_s="$(sm_fit_plain "$self_note" "$w_cwd")"
-          hist_s="$(sm_fit_plain "" "$w_hist")"
+          cmd_s="$(sm_fit_plain "${item_cmd[$idx]}" "$w_cmd")"
+          local act_cwd
+          act_cwd="$(sm_shorten_path "${item_cwd[$idx]}")"
+          if [[ -n "$current_sess" && "$tgt" == "$current_sess" ]]; then
+            act_cwd="${act_cwd} (this session)"
+          fi
+          cwd_s="$(sm_fit_plain "$act_cwd" "$w_cwd")"
+          hist_s="$(sm_fit_plain "${item_hist[$idx]}L" "$w_hist")"
           if [[ "${item_ip[$idx]}" != "-" ]]; then
             ip_s="$(sm_fit_plain "$(sm_ip_display "${item_ip[$idx]}")" "$w_ip")"
           else
@@ -2790,12 +2761,14 @@ sm_run_picker() {
 
       local row_bg="" txt_c="$C_TEXT" dim_c="$C_MUTED" lead="  "
       if (( idx == cursor )); then
+        local bar_c="$C_ACCENT"
+        [[ "$kind" == "ACTIVE" ]] && bar_c="$C_ACTIVE"
         row_bg="$C_SEL_BG"
         txt_c="${C_BOLD}${C_TEXT}"
         dim_c="$C_TEXT"
-        lead="${C_SEL_BG}${C_ACCENT}${G_BAR}${C_RST}${C_SEL_BG} "
+        lead="${C_SEL_BG}${bar_c}${G_BAR}${C_RST}${C_SEL_BG} "
       elif [[ "$kind" == "ACTIVE" ]]; then
-        txt_c="$C_MUTED"
+        txt_c="$C_PREVIEW_DIM"
       fi
 
       local row_str="${lead}${row_bg}${dim_c}${num_s} ${txt_c}${name_s}  ${badge_color}${badge_plain}${C_RST}${row_bg}"
@@ -2811,7 +2784,13 @@ sm_run_picker() {
         used_cols=$((used_cols + 2 + w_hist))
       fi
       if (( w_ip > 0 )); then
-        row_str+="  ${dim_c}${ip_s}"
+        local ip_c="$dim_c"
+        if [[ "$kind" == "ACTIVE" ]]; then
+          ip_c="$C_ACTIVE"
+        elif [[ "${item_ip[$idx]}" != "-" && -n "$current_safe" && "$(sm_sanitize "${item_ip[$idx]}")" != "$current_safe" ]]; then
+          ip_c="$C_ACTIVE"
+        fi
+        row_str+="  ${ip_c}${ip_s}${C_RST}${row_bg}"
         used_cols=$((used_cols + 2 + w_ip))
       fi
       local trail_pad=$(( inner - used_cols ))
@@ -2839,7 +2818,7 @@ sm_run_picker() {
       buf+="${C_BORDER}${G_V}${C_RST}$(printf '%*s' "$inner" '')${C_BORDER}${G_V}${C_RST}"$'\n'
     done
 
-    # Capture & format preview for current selection (strictly skips active sessions!)
+    # Capture & format live preview for current selection
     local cur_kind="${item_kind[$cursor]}"
     local cur_tgt="${item_target[$cursor]}"
     local cur_state="${item_state[$cursor]}"
@@ -2879,19 +2858,36 @@ sm_run_picker() {
         fi
         ;;
       ACTIVE)
-        local cap_out
+        local short_p_cwd cap_out meta_hdr act_hint="[t] transfer here"
+        short_p_cwd="$(sm_shorten_path "${item_cwd[$cursor]}")"
+        [[ -n "$current_sess" && "$cur_tgt" == "$current_sess" ]] && act_hint="this session"
         cap_out="$(sm_capture_tui_preview "$socket" "$cur_tgt" "active" "$preview_budget" "$prev_w" \
-          "${item_cmd[$cursor]}" "${item_cwd[$cursor]}" "${item_hist[$cursor]}" "${item_ip[$cursor]}" 0 0)"
+          "${item_cmd[$cursor]}" "${item_cwd[$cursor]}" "${item_hist[$cursor]}" "${item_ip[$cursor]}" \
+          "$pan_x" 0)"
+        meta_hdr="${cap_out%%$'\n'*}"
+        IFS='|' read -r p_pane_w p_pane_h p_total_lines p_max_src_w p_start_line <<< "$meta_hdr"
         if [[ "$cap_out" == *$'\n'* ]]; then
           local pl
           while IFS= read -r pl; do
             preview_lines+=("$pl")
           done <<< "${cap_out#*$'\n'}"
         fi
-        prev_l_plain="Preview | ${cur_tgt} | active (privacy guard)"
-        prev_l_styled="${C_ACTIVE}Preview ${G_SEP} ${cur_tgt} ${G_SEP} active (privacy guard)${C_RST}"
-        prev_r_plain="capture-pane skipped"
-        prev_r_styled="${C_MUTED}capture-pane skipped${C_RST}"
+        prev_l_plain="Preview | ${cur_tgt} | active | ${item_win[$cursor]}w | ${item_cmd[$cursor]} | $(sm_sanitize_line "$short_p_cwd" 38)"
+        prev_l_styled="${C_ACTIVE}Preview${C_RST}${C_MUTED} ${G_SEP} ${C_RST}${C_BOLD}${C_ACTIVE}${cur_tgt}${C_RST}${C_ACTIVE} ${G_SEP} active${C_RST}${C_MUTED} ${G_SEP} ${item_win[$cursor]}w ${G_SEP} ${item_cmd[$cursor]} ${G_SEP} $(sm_sanitize_line "$short_p_cwd" 38)${C_RST}"
+        if (( p_max_src_w > prev_w || pan_x > 0 )); then
+          if (( pan_x > 0 && p_max_src_w > prev_w && pan_x > p_max_src_w - prev_w + 8 )); then
+            pan_x=$((p_max_src_w - prev_w))
+            (( pan_x < 0 )) && pan_x=0
+          fi
+          prev_r_plain="pane ${p_pane_w}x${p_pane_h} | <-/-> pan +${pan_x}/${p_max_src_w}c | ${act_hint}"
+          prev_r_styled="${C_MUTED}pane ${p_pane_w}x${p_pane_h} ${G_SEP} ${C_RST}${C_ACCENT}<-/-> pan +${pan_x}/${p_max_src_w}c${C_RST}${C_MUTED} ${G_SEP} ${C_RST}${C_ACTIVE}${act_hint}${C_RST}"
+        elif (( p_pane_w > 0 )); then
+          prev_r_plain="pane ${p_pane_w}x${p_pane_h} | ${act_hint}"
+          prev_r_styled="${C_MUTED}pane ${p_pane_w}x${p_pane_h} ${G_SEP} ${C_RST}${C_ACTIVE}${act_hint}${C_RST}"
+        else
+          prev_r_plain="${act_hint}"
+          prev_r_styled="${C_ACTIVE}${act_hint}${C_RST}"
+        fi
         ;;
       NEW)
         prev_l_plain="Preview | + New terminal (${cur_tgt})"
@@ -2932,12 +2928,17 @@ sm_run_picker() {
     local max_prev_l=$(( inner - ${#prev_r_plain} - 8 ))
     if (( ${#prev_l_plain} > max_prev_l && max_prev_l > 16 )); then
       prev_l_plain="$(sm_sanitize_line "$prev_l_plain" "$max_prev_l")"
-      prev_l_styled="${C_ACCENT}${prev_l_plain}${C_RST}"
+      if [[ "$cur_kind" == "ACTIVE" ]]; then
+        prev_l_styled="${C_ACTIVE}${prev_l_plain}${C_RST}"
+      else
+        prev_l_styled="${C_ACCENT}${prev_l_plain}${C_RST}"
+      fi
     fi
 
     buf+="$(sm_box_rule "$G_ML" "$G_MR" "$prev_l_styled" "${#prev_l_plain}" "$prev_r_styled" "${#prev_r_plain}")"$'\n'
 
-    local p_idx blank_prev
+    local p_idx blank_prev thumb_c="$C_ACCENT"
+    [[ "$cur_kind" == "ACTIVE" ]] && thumb_c="$C_ACTIVE"
     printf -v blank_prev '%*s' "$prev_w" ''
     for ((p_idx = 0; p_idx < preview_budget; p_idx++)); do
       local r_edge="$G_V"
@@ -2946,13 +2947,13 @@ sm_run_picker() {
         local thumb_start=$(( (p_start_line * preview_budget) / p_total_lines ))
         (( thumb_start < 0 )) && thumb_start=0
         if (( p_idx >= thumb_start )); then
-          r_edge="${C_ACCENT}${G_THUMB}${C_BORDER}"
+          r_edge="${thumb_c}${G_THUMB}${C_BORDER}"
         fi
       fi
       if (( p_idx < ${#preview_lines[@]} )); then
         local pl_color="" pl_end=""
         if [[ "$cur_kind" == "ACTIVE" ]]; then
-          pl_color="$C_MUTED"; pl_end="$C_RST"
+          pl_color="$C_PREVIEW_DIM"; pl_end="$C_RST"
         elif [[ "$cur_kind" == "NEW" || "$cur_kind" == "SKIP" || "$cur_state" == "empty" || "$cur_state" == "cleared" ]]; then
           pl_color="$C_TEXT"; pl_end="$C_RST"
         fi
@@ -3042,7 +3043,7 @@ sm_run_picker() {
         fi
         ;;
       RIGHT)
-        if [[ "${item_kind[$cursor]}" == "SESSION" ]] && (( p_max_src_w > prev_w )); then
+        if [[ "${item_kind[$cursor]}" == "SESSION" || "${item_kind[$cursor]}" == "ACTIVE" ]] && (( p_max_src_w > prev_w )); then
           local max_pan=$(( p_max_src_w - prev_w ))
           (( max_pan < 0 )) && max_pan=0
           pan_x=$((pan_x + 12))
@@ -3165,7 +3166,7 @@ sm_run_picker() {
             flash="Already attached to ${current_sess}."
             flash_kind="warn"
           else
-            flash="${item_target[$activate_idx]} is active elsewhere (preview hidden). Press [t] to transfer/takeover."
+            flash="${item_target[$activate_idx]} is attached elsewhere. Press [t] to transfer/takeover here."
             flash_kind="warn"
           fi
           ;;

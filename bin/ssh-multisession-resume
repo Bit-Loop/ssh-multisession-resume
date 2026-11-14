@@ -70,8 +70,9 @@ Advanced / source-checkout commands:
   ${cmd} service-rollback               remove keepalive unit
 
 No setup is needed. Logins default to a shared multi-session pool. When open
-sessions already exist, the interactive picker previews detached terminals
-(active sessions are never previewed) so you can choose with arrow keys or 1-9.
+sessions already exist, the interactive picker previews managed terminals
+(highlighting attached/transfer-needed sessions in purple with dimmed previews)
+so you can choose with arrow keys or 1-9.
 USAGE
 }
 

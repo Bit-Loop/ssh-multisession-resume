@@ -38,8 +38,10 @@ instances, the interactive **Session Picker** appears automatically:
 - **Arrow keys (`Up`/`Down` or `j`/`k`)** browse detached sessions with a
   full-width color live pane preview (`Left`/`Right` pans wide terminal output
   horizontally), or **type a number (`1`–`9`)** to jump straight in.
-- **Active sessions are never previewed**: any currently attached session is
-  marked `active · preview hidden` and `capture-pane` is strictly skipped.
+- **Active / transfer-needed sessions stay clearly distinguished**: sessions
+  already attached elsewhere (or belonging to another client IP) are highlighted
+  in purple (`[t] transfer here`) with slightly dimmed live preview text so you
+  can inspect what is running before transferring.
 - **Cleared & empty terminal detection**: single-pane idle shells with no
   running foreground or background child processes are automatically badged as
   `empty` (fresh untouched shell) or `cleared` (`clear` / `Ctrl-L` shell)
